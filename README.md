@@ -209,7 +209,7 @@ PORT=3000 ENABLE_GENERAL_UNBLOCK=true ENABLE_FLAC=true node app.js
 
 ## 与 ESP32 固件对接
 
-配套固件：[小智 AI 音乐固件](https://github.com/OmniX-Space/xiaozhi-esp32) 的改造版，语音点歌后由固件发起：
+配套固件：[小智 AI 音乐固件（ESP32-S3）](https://github.com/joe12801/xiaozhi-esp32-music)，语音点歌后由固件发起：
 
 ```
 GET http://<服务器IP>:2233/stream_pcm?song=晴天&singer=周杰伦
