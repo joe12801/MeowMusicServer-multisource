@@ -150,44 +150,405 @@ https://music-api.gdstudio.xyz/api.php
 
 ---
 
-## 编译与运行
+## 部署
 
-### 依赖
+两个平台都只需要两样东西：**Go 1.25+** 和 **ffmpeg**。下面 Windows 和 Linux 各给一套完整步骤，任选其一。
 
-- Go 1.25+
-- **ffmpeg**（必须，用于把音频转成设备需要的 24kHz 单声道 MP3）
+### 通用：获取代码
 
 ```bash
-# Windows 把 ffmpeg 加进 PATH，例如
-set PATH=D:\ffmpeg-master-latest-win64-gpl\bin;%PATH%
+git clone https://github.com/joe12801/MeowMusicServer-multisource.git
+cd MeowMusicServer-multisource
 ```
 
-### 编译
+---
 
-```bash
-cd MeowMusicServer
+### Windows 部署
+
+#### 1. 安装 Go
+
+**方式 A：winget（推荐，Win10 1809+）**
+
+```powershell
+winget install GoLang.Go
+```
+
+**方式 B：安装包**
+
+打开 https://go.dev/dl/ 下载 `go1.25.x.windows-amd64.msi`，双击安装（默认装到 `C:\Program Files\Go`）。
+
+装完**必须新开一个终端**，然后验证：
+
+```powershell
+go version
+# 期望输出：go version go1.25.x windows/amd64
+```
+
+#### 2. 安装 ffmpeg
+
+**方式 A：winget**
+
+```powershell
+winget install Gyan.FFmpeg
+```
+
+**方式 B：手动解压**
+
+1. 下载 https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+2. 解压到 `C:\ffmpeg`（确认 `C:\ffmpeg\bin\ffmpeg.exe` 存在）
+3. 加进系统 PATH（**管理员** PowerShell 执行一次）：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  "Path",
+  [Environment]::GetEnvironmentVariable("Path", "Machine") + ";C:\ffmpeg\bin",
+  "Machine"
+)
+```
+
+新开终端验证：
+
+```powershell
+ffmpeg -version
+```
+
+#### 3. 编译
+
+```powershell
+cd MeowMusicServer-multisource
+
+# 国内网络建议先设代理，否则拉依赖会很慢
+go env -w GOPROXY=https://goproxy.cn,direct
+
+go mod tidy
 go build -o MeowMusicServer.exe .
 ```
 
-### 运行
+看到目录里出现 `MeowMusicServer.exe`（约 12MB）就成功了。
 
-```bash
-./MeowMusicServer.exe
+> 也可以直接双击 `start.bat`，它会自动检查 Go、拉依赖并 `go run .` 启动，适合先跑起来看看。
+
+#### 4. 运行
+
+**前置条件**：`ffmpeg` 必须在 PATH 里，否则点歌时会报 `failed to start ffmpeg`。
+
+```powershell
+# 默认 2233 端口
+.\MeowMusicServer.exe
+
+# 想换端口（临时）
+$env:PORT = "8080"; .\MeowMusicServer.exe
 ```
 
-默认监听 `0.0.0.0:2233`，浏览器打开 `http://localhost:2233` 可以看到 Web 管理界面。
+或者在项目根目录建一个 `.env` 文件（长期生效）：
 
-首次运行会在当前目录生成 `devices.json`，用于保存设备绑定关系。
+```ini
+PORT=2233
+```
 
-### 可选：启用网易云通道
+启动后浏览器打开 http://localhost:2233 ，第一次访问会提示注册账户。
+
+#### 5. 放行防火墙（关键）
+
+不放行的话，ESP32 能连上 WiFi 但点歌一定超时。**管理员** PowerShell 执行：
+
+```powershell
+netsh advfirewall firewall add rule name="MeowMusic 2233" dir=in action=allow protocol=TCP localport=2233
+```
+
+如果用的是第三方安全软件（360、火绒等），还要在它的「网络防护」里给 `MeowMusicServer.exe` 放行。
+
+#### 6. 查本机 IP 并填进固件
+
+```powershell
+ipconfig
+```
+
+找到当前 WiFi 网卡的 **IPv4 地址**（例如 `192.168.1.100`），填到固件的 `main/server_config.h`：
+
+```c
+#define MUSIC_SERVER_URL "http://192.168.1.100:2233"
+```
+
+#### 7. 开机自启（两种方式）
+
+**方式 A：任务计划程序（简单）**
+
+先建一个 `C:\meow\run.bat`，内容**必须**先 `cd` 到程序目录，否则 `devices.json` 会生成到 `C:\Windows\System32`：
+
+```bat
+@echo off
+cd /d C:\meow
+C:\meow\MeowMusicServer.exe
+```
+
+然后**管理员** CMD 注册开机任务：
+
+```cmd
+schtasks /create /tn "MeowMusicServer" /tr "C:\meow\run.bat" /sc onstart /ru SYSTEM /rl highest /f
+```
+
+管理：
+
+```cmd
+schtasks /run    /tn "MeowMusicServer"    :: 立即启动
+schtasks /end    /tn "MeowMusicServer"    :: 停止
+schtasks /delete /tn "MeowMusicServer" /f :: 删除
+```
+
+**方式 B：NSSM 注册成 Windows 服务（推荐，能设工作目录 + 崩溃自动重启）**
+
+1. 下载 https://nssm.cc/download ，解压出 `nssm.exe`（放到 `C:\meow\`）
+2. **管理员** CMD 执行：
+
+```cmd
+C:\meow\nssm.exe install MeowMusic "C:\meow\MeowMusicServer.exe"
+C:\meow\nssm.exe set MeowMusic AppDirectory "C:\meow"
+C:\meow\nssm.exe set MeowMusic AppEnvironmentExtra PORT=2233
+C:\meow\nssm.exe set MeowMusic Start SERVICE_AUTO_START
+C:\meow\nssm.exe start MeowMusic
+```
+
+之后在「服务」里就能看到 `MeowMusic`，改配置用 `nssm edit MeowMusic`。
+
+---
+
+### Linux 部署
+
+以 Ubuntu 22.04 / Debian 12 为例，其他发行版对应替换包管理器即可。
+
+#### 1. 安装 Go
+
+发行版自带的 Go 版本往往偏低（`go.mod` 要求 1.25），建议用官方二进制：
 
 ```bash
-cd NeteaseCloudMusicApiEnhanced
+# 版本号去 https://go.dev/dl/ 查最新的 1.25.x
+wget https://go.dev/dl/go1.25.4.linux-amd64.tar.gz
+
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.25.4.linux-amd64.tar.gz
+
+# 写进 PATH（当前用户）
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
+source ~/.profile
+
+go version
+```
+
+> ARM 服务器（树莓派、甲骨文 ARM 实例）把文件名换成 `go1.25.4.linux-arm64.tar.gz`。
+
+#### 2. 安装 ffmpeg
+
+```bash
+# Debian / Ubuntu
+sudo apt update && sudo apt install -y ffmpeg
+
+# Fedora / RHEL（需先启用 RPM Fusion）
+sudo dnf install -y ffmpeg
+
+# Arch / Manjaro
+sudo pacman -S --noconfirm ffmpeg
+```
+
+验证：
+
+```bash
+which ffmpeg && ffmpeg -version | head -1
+```
+
+> 记下 `which ffmpeg` 的路径（通常是 `/usr/bin/ffmpeg`），后面 systemd 里要确保它在 PATH 中。
+
+#### 3. 编译
+
+```bash
+cd ~/MeowMusicServer-multisource
+
+export GOPROXY=https://goproxy.cn,direct
+go mod tidy
+go build -o MeowMusicServer .
+```
+
+#### 4. 调整目录权限并试运行
+
+```bash
+# 建一个专用系统用户，避免用 root 跑
+sudo useradd -r -s /usr/sbin/nologin meowmusic 2>/dev/null || true
+
+sudo mkdir -p /opt/meow-music
+sudo cp -r ./* /opt/meow-music/
+sudo chown -R meowmusic:meowmusic /opt/meow-music
+
+# 试跑（前台，Ctrl+C 停止）
+cd /opt/meow-music
+PORT=2233 ./MeowMusicServer
+```
+
+另开一个终端验证：
+
+```bash
+curl -s "http://127.0.0.1:2233/api/search?keyword=晴天" | head -c 200
+```
+
+#### 5. 注册成 systemd 服务（开机自启 + 崩溃自动重启）
+
+新建 `/etc/systemd/system/meow-music.service`：
+
+```ini
+[Unit]
+Description=Meow Music Server (多音源)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meowmusic
+Group=meowmusic
+WorkingDirectory=/opt/meow-music
+Environment=PORT=2233
+# 如果启用了网易云通道，取消下面这行注释
+# Environment=NCM_API_BASE=http://127.0.0.1:3000
+ExecStart=/opt/meow-music/MeowMusicServer
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启用：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now meow-music
+
+sudo systemctl status meow-music       # 看运行状态
+journalctl -u meow-music -f            # 实时看日志
+```
+
+常用管理：
+
+```bash
+sudo systemctl restart meow-music   # 改完配置重启
+sudo systemctl stop meow-music      # 停止
+sudo systemctl disable meow-music   # 取消开机自启
+```
+
+> **踩坑提醒**：systemd 的默认 PATH 是 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`。
+> 如果你的 ffmpeg 不在这些目录（例如自己编译到 `/opt/ffmpeg/bin`），必须在 unit 里补一行：
+> `Environment=PATH=/opt/ffmpeg/bin:/usr/local/bin:/usr/bin:/bin`，否则服务能起但一点歌就失败。
+
+#### 6. 放行防火墙
+
+```bash
+# ufw（Ubuntu/Debian）
+sudo ufw allow 2233/tcp
+sudo ufw reload
+
+# firewalld（CentOS/RHEL/Fedora）
+sudo firewall-cmd --permanent --add-port=2233/tcp
+sudo firewall-cmd --reload
+```
+
+云服务器（阿里云/腾讯云/Oracle 等）还要在**控制台安全组**里额外放行 2233/TCP，这一步最容易漏。
+
+#### 7. 查本机 IP
+
+```bash
+ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v 127.0.0.1
+```
+
+把结果填进固件的 `main/server_config.h`。**注意**：ESP32 和服务器必须在同一局域网；如果是云服务器，需要公网 IP 或内网穿透。
+
+---
+
+### 可选：启用网易云通道（两个平台通用）
+
+这一步不是必需的，只是让「网易云原唱 + UNM 解灰」这层兜底生效。需要 Node.js 18+。
+
+先把 API 项目拉到主服务器同级的目录（只做一次）：
+
+```bash
+git clone https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git
+```
+
+**Windows：**
+
+```powershell
+cd api-enhanced
 npm install
-PORT=3000 ENABLE_GENERAL_UNBLOCK=true ENABLE_FLAC=true node app.js
+$env:PORT="3000"
+$env:ENABLE_GENERAL_UNBLOCK="true"
+node app.js
 ```
 
-不启动也能正常工作，只是少了一层兜底。
+**Linux：**
+
+```bash
+sudo apt install -y nodejs npm       # 或用 nvm 装 Node 20
+cd api-enhanced
+npm install
+PORT=3000 ENABLE_GENERAL_UNBLOCK=true node app.js
+```
+
+启动后主服务器会自动连 `http://127.0.0.1:3000`；如果它跑在别的机器/端口，用环境变量指过去：
+
+```bash
+NCM_API_BASE=http://192.168.1.50:3000
+```
+
+Linux 下同样可以给它写一个 systemd unit（把 `ExecStart` 换成 `node app.js`，`WorkingDirectory` 指向 `api-enhanced`）。
+
+---
+
+### 可选：Docker 部署
+
+不想装 Go 和 ffmpeg 环境的话，用容器最省事。项目根目录建 `Dockerfile`：
+
+```dockerfile
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY . .
+RUN go env -w GOPROXY=https://goproxy.cn,direct && \
+    go mod tidy && \
+    CGO_ENABLED=0 go build -o MeowMusicServer .
+
+FROM alpine:3.20
+RUN apk add --no-cache ffmpeg ca-certificates tzdata
+WORKDIR /app
+COPY --from=build /src/MeowMusicServer .
+COPY --from=build /src/files ./files
+COPY --from=build /src/frontend ./frontend
+COPY --from=build /src/theme ./theme
+ENV PORT=2233
+EXPOSE 2233
+CMD ["./MeowMusicServer"]
+```
+
+`docker-compose.yml`：
+
+```yaml
+services:
+  meow-music:
+    build: .
+    container_name: meow-music
+    ports:
+      - "2233:2233"
+    environment:
+      - PORT=2233
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./cache:/app/cache          # 音频缓存
+      - ./files:/app/files          # 歌单、用户数据、背景图
+      - ./devices.json:/app/devices.json   # 映射前先建好：echo '{"devices":{}}' > devices.json
+    restart: unless-stopped
+```
+
+```bash
+docker compose up -d --build
+docker compose logs -f
+```
 
 ---
 
