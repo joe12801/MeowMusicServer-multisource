@@ -1,0 +1,24 @@
+# 编译产物
+*.exe
+*.test
+*.out
+MeowMusicServer
+
+# 运行时数据（含设备 MAC / Token，切勿提交）
+devices.json
+.env
+.env.local
+
+# 音频缓存
+cache/*
+!cache/.gitkeep
+
+# 日志
+*.log
+nohup.out
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+*.swp
