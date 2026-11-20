@@ -247,16 +247,18 @@ func srcNoiseOf(name, album, song string) (int, bool, bool) {
 //  1. 酷我（严格）—— 唯一能覆盖付费大牌（周杰伦/陈奕迅）的通道，返回完整 320k，
 //     正常 0.5s 命中，绝大多数点歌在这一步结束。
 //  2. 网易云直连 —— 不依赖本地服务，覆盖「有版权且免 VIP」的曲目。
-//  3. QQ 音乐 —— 只对免费曲有效，但对独立/民谣/网络歌曲覆盖极好（实测冷门 6/10）。
-//  4. 酷狗     —— 曲库最厚，但热门曲绝大多数要付费，实测冷门仅 1/10，只作补充。
-//  5. 网易云本地 API —— 若同机跑了 ncm 服务则用（带 UNM 解灰），没跑则瞬间返回空。
-//  6. 酷我（宽容）—— 上面全空时，用 Live/翻唱版顶一下，能听比没歌强。
-//  7. GD Studio —— 公益聚合源，境外环境下是唯一能用的（酷我/酷狗/QQ 都限大陆）。
-//  8. yuafeng   —— 最后兜底，能出什么算什么。
+//  3. 小枫 xfabe —— 同曲库，但由第三方后端代取链，能补网易云的 VIP 曲；
+//     接口有限流，撞到 405 会自动静默 15 分钟，不影响后面几个源。
+//  4. QQ 音乐 —— 只对免费曲有效，但对独立/民谣/网络歌曲覆盖极好（实测冷门 6/10）。
+//  5. 酷狗     —— 曲库最厚，但热门曲绝大多数要付费，实测冷门仅 1/10，只作补充。
+//  6. 网易云本地 API —— 若同机跑了 ncm 服务则用（带 UNM 解灰），没跑则瞬间返回空。
+//  7. 酷我（宽容）—— 上面全空时，用 Live/翻唱版顶一下，能听比没歌强。
+//  8. GD Studio —— 公益聚合源，境外环境下是唯一能用的（酷我/酷狗/QQ 都限大陆）。
+//  9. yuafeng   —— 最后兜底，能出什么算什么。
 func requestAndCacheMusic(song, singer string) MusicItem {
-	fmt.Printf("[Source] %q - %q | kuwo=%v kugou=%v netease=%v qq=%v gdstudio=%v\n",
+	fmt.Printf("[Source] %q - %q | kuwo=%v kugou=%v netease=%v xfabe=%v qq=%v gdstudio=%v\n",
 		song, singer, srcEnabled("kuwo"), srcEnabled("kugou"),
-		srcEnabled("netease"), srcEnabled("qq"), srcEnabled("gdstudio"))
+		srcEnabled("netease"), srcEnabled("xfabe"), srcEnabled("qq"), srcEnabled("gdstudio"))
 
 	// ---- 前段：只要真原唱 ----
 	if srcEnabled("kuwo") {
@@ -266,6 +268,12 @@ func requestAndCacheMusic(song, singer string) MusicItem {
 	}
 	if srcEnabled("netease") {
 		if item := NeteaseSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+			return item
+		}
+	}
+	// 小枫 xfabe：与网易云同曲库，但能代取 VIP 曲的直链（限流时会自己闭嘴）
+	if srcEnabled("xfabe") {
+		if item := XfabeSearch(song, singer); item.Title != "" && item.AudioURL != "" {
 			return item
 		}
 	}

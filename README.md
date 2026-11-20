@@ -2,7 +2,7 @@
 
 给嵌入式设备（ESP32 等）用的局域网音乐流媒体服务器。
 
-**核心改造：把原来单一的音源换成了「酷我 → 网易云直连 → QQ 音乐 → 酷狗 → 网易云本地 API → 酷我宽容模式 → GD Studio → yuafeng」八层自动回退链路，并加了一套选曲打分算法，解决点歌时最常见的两个问题——「搜不到」和「放错版本」。**
+**核心改造：把原来单一的音源换成了「酷我 → 网易云直连 → 小枫 xfabe → QQ 音乐 → 酷狗 → 网易云本地 API → 酷我宽容模式 → GD Studio → yuafeng」九层自动回退链路，并加了一套选曲打分算法，解决点歌时最常见的两个问题——「搜不到」和「放错版本」。**
 
 实测 35 首中文/粤语/日语歌曲（热门 + 冷门独立音乐混合），全部命中正确歌手与正确时长，首字节耗时 **0.5–1.4 秒**。
 
@@ -27,7 +27,7 @@
 
 ## 音源链路
 
-同一条链路上跑八个源，前四个是「严格模式」（只要原唱），后面才是宽容兜底。
+同一条链路上跑九个源，前五个是「严格模式」（只要原唱），后面才是宽容兜底。
 
 ```
   点歌请求（song + singer）
@@ -44,32 +44,37 @@
  └───────────────────┬───────────────────────┘
                      ▼
  ┌───────────────────────────────────────────┐
- │ ③ QQ 音乐           免费曲池                 │
+ │ ③ 小枫 xfabe        代取网易云 VIP 直链      │
+ │   撞 405 自动静默 15 分钟（当前即此状态）     │
+ └───────────────────┬───────────────────────┘
+                     ▼
+ ┌───────────────────────────────────────────┐
+ │ ④ QQ 音乐           免费曲池                 │
  │   独立 / 民谣 / 网络歌曲覆盖最好（冷门 6/10）│
  └───────────────────┬───────────────────────┘
                      ▼
  ┌───────────────────────────────────────────┐
- │ ④ 酷狗              免费曲补充               │
+ │ ⑤ 酷狗              免费曲补充               │
  │   曲库最厚但付费比例高（冷门 1/10）          │
  └───────────────────┬───────────────────────┘
                      ▼
  ┌───────────────────────────────────────────┐
- │ ⑤ 网易云本地 API（可选）带 UNM 解灰          │
+ │ ⑥ 网易云本地 API（可选）带 UNM 解灰          │
  │   同机跑了 ncm 服务才有用，否则瞬间返回       │
  └───────────────────┬───────────────────────┘
                      ▼
  ┌───────────────────────────────────────────┐
- │ ⑥ 酷我（宽容）      Live / 翻唱版顶上        │
+ │ ⑦ 酷我（宽容）      Live / 翻唱版顶上        │
  │   上面全空时才用，能听比没歌强               │
  └───────────────────┬───────────────────────┘
                      ▼
  ┌───────────────────────────────────────────┐
- │ ⑦ GD Studio         公益聚合源               │
+ │ ⑧ GD Studio         公益聚合源               │
  │   境外部署时唯一能用的（境内四家都限地域）    │
  └───────────────────┬───────────────────────┘
                      ▼
  ┌───────────────────────────────────────────┐
- │ ⑧ yuafeng           最后兜底                 │
+ │ ⑨ yuafeng           最后兜底                 │
  └───────────────────────────────────────────┘
 ```
 
@@ -115,7 +120,36 @@ http://bd-api.kuwo.cn/api/play/music/v2/audioUrl?br=320kmp3&musicId=<RID>
 
 跳过 `fee==1`（VIP 专享）和 `fee==4`（付费专辑）的候选，它们的 outer url 必空。`fee==8`（下架但有低音质）反而经常能取到，不要一起跳过。
 
-### ③ QQ 音乐 `qqmusic.go`（新增）
+### ③ 小枫 xfabe `xfabe.go`（新增，实验性）
+
+文档：<https://api.xfabe.com/info/wy_MuiscInfo/doc>（站点是 SPA，文档数据走
+`POST https://api.xfabe.com/api/apiInfo/doc`，传 `{"docName":"wy_MuiscInfo"}`）
+
+```
+搜索  https://node.api.xfabe.com/api/wangyi/search?search=<歌名>&limit=15
+取链  https://node.api.xfabe.com/api/wangyi/music?type=json&id=<网易云 id>
+```
+
+和「网易云直连」是同一个曲库，差别在取链：我们自己拼 `outer/url` 只能拿免 VIP 的，
+这个接口由第三方后端代取，文档标注支持 VIP，返回带鉴权参数的 CDN 直链。
+
+> ⚠️ **当前状态：搜索可用，取链被限流。**
+> `/music` 对任何 id、任何 UA、任何 Referer、任何 IP（本机广州移动 / 境外马来西亚 VPS
+> 都是第一发就中）统一返回 `{"code":405,"msg":"操作频繁，请稍候再试"}`，
+> 而同一台服务器上的 `/search` 和 `/randomMusic` 都正常返回。
+> 判断是服务端全局限流（可能是它自己上游的额度用完了），不是我们的参数或网络问题。
+> 代码里做成了「撞到 405 立刻静默 15 分钟」，所以它不会拖慢后续音源；
+> 等对方恢复，这条通道会自动开始出货，不需要改代码。
+
+其它坑：
+
+- `duration` 单位是**毫秒**，不是秒。
+- 字段名是 `artistsname`（少一个 t）。
+- 搜索结果里翻唱占大头（搜「晴天」第一条是「晴天 (原唱 周杰伦) - RyaVocal」），
+  所以照样要过 `srcNoiseOf` / `srcTitleScore` / `kwFatalArtistMarkers` 三套闸门；
+  实测 `海底` 能选出 `一支榴莲 256s`（score=190）这一条正确候选。
+
+### ④ QQ 音乐 `qqmusic.go`（新增）
 
 ```
 搜索  https://c.y.qq.com/soso/fcgi-bin/client_search_cp?new_json=1&cr=1&p=1&n=15&w=<歌名 歌手>&format=json
@@ -129,7 +163,7 @@ http://bd-api.kuwo.cn/api/play/music/v2/audioUrl?br=320kmp3&musicId=<RID>
 > **坑：参数不能"补全"。**
 > 带上官方网页那套 `remoteplace=txt.yqq.song` / `searchid=0` 之后，接口对任何关键词都稳定返回 `curnum:0`（0 条）。去掉这两个参数，同样的关键词立刻返回 15 条。别照着网页请求抄参数。
 
-### ④ 酷狗 `kugou.go`（新增）
+### ⑤ 酷狗 `kugou.go`（新增）
 
 ```
 搜索  http://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=<歌名 歌手>&page=1&pagesize=15
@@ -143,7 +177,7 @@ http://bd-api.kuwo.cn/api/play/music/v2/audioUrl?br=320kmp3&musicId=<RID>
 1. **必须走 http 且强制 IPv4。** `mobilecdn.kugou.com` 在部分机器上只解析出 IPv6，而该机器的 IPv6 出口是坏的——https 握手直接超时（curl 返回 `000`），http 走 IPv6 却能通。
 2. **不能跟随重定向。** Go 默认会把 `http://m.kugou.com/...` 301 跳到 https，然后卡死在坏掉的 https 上，表现是「搜索有结果但取链永远失败」。`curl` 不加 `-L` 能直接拿到 JSON，代码里也照做（`CheckRedirect` 返回 `ErrUseLastResponse`）。
 
-### ⑤ 网易云本地 API `ncm.go`（可选）
+### ⑥ 网易云本地 API `ncm.go`（可选）
 
 配合 [NeteaseCloudMusicApiEnhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) 使用，默认连 `http://127.0.0.1:3000`，可用环境变量覆盖：
 
@@ -163,7 +197,7 @@ ENABLE_FLAC=true
 
 > ⚠️ 没装这个服务也完全不影响使用——`NCMSearch()` 会立刻 `connection refused` 返回空，链路上继续往下走。网易云把周杰伦整批下架了，**搜索接口、专辑、歌单、歌手页都拿不到 id**，所以这条路救不了周杰伦。另外 artist id `122200643` 是蹭流量的假号，周杰伦真实 id 是 `6452`。
 
-### ⑥ 酷我宽容模式
+### ⑦ 酷我宽容模式
 
 同一个 `kuwo.go`，用 `KuwoSearch()` 而不是 `KuwoSearchStrict()`。差别只有一处：允许「有人声的 Live / 翻唱 / DJ 版」进入候选（纯器乐仍然永远排除）。
 
@@ -172,7 +206,7 @@ ENABLE_FLAC=true
 - 排前面会出真问题。《理想三旬》− 陈鸿宇，酷我只收了两条：一条是 130 秒的「陈鸿宇&翻唱者：王煜航」拼接版，一条是 242 秒的 Live 版。原版 210 秒在 QQ / 网易云那儿。如果一上来就用宽容模式，会直接放半首翻唱。
 - 排后面又必须留。上面七个源全空时，有一首 Live 版总比设备干等着没声强。
 
-### ⑦ GD Studio `gdstudio.go`
+### ⑧ GD Studio `gdstudio.go`
 
 ```
 https://music-api.gdstudio.xyz/api.php
@@ -184,7 +218,7 @@ https://music-api.gdstudio.xyz/api.php
 
 **境外部署时它是唯一能用的**：酷我返回 `code=407 仅限中国大陆地区使用`，酷狗 / QQ 同样限地域。代码里对酷我做了地域判定，检测到 407/433 就在本进程内停用，不再每次白等 5~10 秒。
 
-### ⑧ yuafeng
+### ⑨ yuafeng
 
 `api.yuafeng.cn` / `api-v2.yuafeng.cn` 的免费接口，限流严重，只作最后手段。
 
@@ -275,7 +309,7 @@ https://music-api.gdstudio.xyz/api.php
 | QQ 音乐 | 6/10 | 免费曲池对独立音乐覆盖最好 |
 | 酷狗 | 1/10 | 冷门曲几乎都要付费 |
 
-没有原唱版权时，按配置允许回退到翻唱/Live 版本（⑥ 酷我宽容模式与 ⑦⑧）。
+没有原唱版权时，按配置允许回退到翻唱/Live 版本（⑦ 酷我宽容模式与 ⑦⑧）。
 
 ---
 
@@ -294,7 +328,7 @@ MUSIC_SOURCES=netease,qq ./MeowMusicServer
 MUSIC_SOURCES=gdstudio,yuafeng ./MeowMusicServer
 ```
 
-可用值：`kuwo` `netease` `qq` `kugou` `gdstudio` `yuafeng`。（`netease` 同时控制「直连」和「本地 API」两条网易云链路。）
+可用值：`kuwo` `netease` `xfabe` `qq` `kugou` `gdstudio` `yuafeng`。（`netease` 同时控制「直连」和「本地 API」两条网易云链路。）
 
 日志里每个请求都会先打一行当前开关状态，便于确认配置生效：
 
@@ -746,6 +780,7 @@ GET http://<服务器IP>:2233/stream_pcm?song=晴天&singer=周杰伦
 ├── main.go              # 入口、路由注册
 ├── kuwo.go              # ★ 酷我波点通道（主力音源，含严格/宽容两档）
 ├── netease_direct.go    # ★ 网易云直连（新增，不依赖本地 API 服务）
+├── xfabe.go             # ★ 小枫 xfabe（新增，代取 VIP 直链，限流自愈）
 ├── qqmusic.go           # ★ QQ 音乐通道（新增，免费曲）
 ├── kugou.go             # ★ 酷狗通道（新增，免费曲补充）
 ├── ncm.go               # ★ 网易云本地 API 通道（可选，带 UNM 解灰）
