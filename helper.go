@@ -256,11 +256,16 @@ func srcNoiseOf(name, album, song string) (int, bool, bool) {
 //  8. GD Studio —— 公益聚合源，境外环境下是唯一能用的（酷我/酷狗/QQ 都限大陆）。
 //  9. mp3.994938.xyz —— 自建 yt-dlp 接口，关键词直搜取第一条，国内外都可用；
 //     冷启动 13s+，上游缓存后秒回，作 GDStudio 之后的兜底。
+//
 // 10. yuafeng   —— 最后兜底，能出什么算什么。
 //
 // 临时调整：设 MUSIC_MP3API_FIRST=1 可把 mp3.994938.xyz 提到整条链路最前
 // （其它源仍在后面兜底），去掉环境变量重启即恢复，不必回滚二进制。
 func requestAndCacheMusic(song, singer string) MusicItem {
+	// 后台顺手预热：不管最终走哪个源，都异步让 mp3api 缓存这首歌，
+	// 方便以后兜底到它时秒回。不影响本次返回（前面的源照常优先）。
+	defer mp3ApiPrewarmAsync(song, singer)
+
 	first := mp3ApiFirst()
 	fmt.Printf("[Source] %q - %q | kuwo=%v kugou=%v netease=%v xfabe=%v qq=%v gdstudio=%v mp3api=%v first=%v\n",
 		song, singer, srcEnabled("kuwo"), srcEnabled("kugou"),
