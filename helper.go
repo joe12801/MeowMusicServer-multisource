@@ -401,38 +401,73 @@ func streamConvertToWriter(inputURL string, w http.ResponseWriter) error {
 		"-map_metadata", "-1",
 		"pipe:1") // 输出到 stdout
 
-	// 获取 stdout pipe
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("failed to get stdout pipe: %v", err)
 	}
-
-	// 启动 ffmpeg
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start ffmpeg: %v", err)
 	}
 
-	// 设置响应头
-	w.Header().Set("Content-Type", "audio/mpeg")
-	// 移除 Transfer-Encoding: chunked，让 Go 自动处理
+	// ESP32 的 esp_http_client 解析 chunked 长流会在中途报
+	// "Parse chunk size failed" 并断流（实测每首只收到约 100KB 就停）。
+	// 这里 Hijack 底层连接，手写不带 Transfer-Encoding 的 HTTP/1.1 响应头，
+	// 用 Connection: close 让客户端按 EOF 判定结束，彻底绕开 chunk 解析。
+	if hj, ok := w.(http.Hijacker); ok {
+		conn, bufrw, herr := hj.Hijack()
+		if herr == nil {
+			defer conn.Close()
+			_, herr = bufrw.WriteString("HTTP/1.1 200 OK\r\n" +
+				"Content-Type: audio/mpeg\r\n" +
+				"Accept-Ranges: bytes\r\n" +
+				"Connection: close\r\n\r\n")
+			if herr == nil {
+				herr = bufrw.Flush()
+			}
+			if herr != nil {
+				cmd.Process.Kill()
+				cmd.Wait()
+				return fmt.Errorf("hijack write header: %v", herr)
+			}
+			fmt.Printf("[Stream Live] Raw response (no chunked), streaming to EOF\n")
+			buf := make([]byte, 16384)
+			total := 0
+			for {
+				n, rerr := stdout.Read(buf)
+				if n > 0 {
+					if _, werr := conn.Write(buf[:n]); werr != nil {
+						break // 客户端断开（切歌/停止）
+					}
+					total += n
+				}
+				if rerr != nil {
+					break
+				}
+			}
+			cmd.Wait()
+			fmt.Printf("[Success] Live streaming completed (raw, %d bytes)\n", total)
+			return nil
+		}
+		fmt.Printf("[Stream Live] Hijack failed: %v, fallback to chunked\n", herr)
+	}
 
-	// 边读边写到 HTTP response
+	// 兜底：无法 Hijack 时退回普通写法（带 chunked）
+	w.Header().Set("Content-Type", "audio/mpeg")
 	buf := make([]byte, 8192)
 	for {
 		n, err := stdout.Read(buf)
 		if n > 0 {
 			w.Write(buf[:n])
 			if f, ok := w.(http.Flusher); ok {
-				f.Flush() // 立即发送给客户端
+				f.Flush()
 			}
 		}
 		if err != nil {
 			break
 		}
 	}
-
 	cmd.Wait()
-	fmt.Printf("[Success] Live streaming completed\n")
+	fmt.Printf("[Success] Live streaming completed (chunked fallback)\n")
 	return nil
 }
 
