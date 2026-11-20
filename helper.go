@@ -254,11 +254,14 @@ func srcNoiseOf(name, album, song string) (int, bool, bool) {
 //  6. 网易云本地 API —— 若同机跑了 ncm 服务则用（带 UNM 解灰），没跑则瞬间返回空。
 //  7. 酷我（宽容）—— 上面全空时，用 Live/翻唱版顶一下，能听比没歌强。
 //  8. GD Studio —— 公益聚合源，境外环境下是唯一能用的（酷我/酷狗/QQ 都限大陆）。
-//  9. yuafeng   —— 最后兜底，能出什么算什么。
+//  9. mp3.994938.xyz —— 自建 yt-dlp 接口，关键词直搜取第一条，国内外都可用；
+//     冷启动 13s+，上游缓存后秒回，作 GDStudio 之后的兜底。
+// 10. yuafeng   —— 最后兜底，能出什么算什么。
 func requestAndCacheMusic(song, singer string) MusicItem {
-	fmt.Printf("[Source] %q - %q | kuwo=%v kugou=%v netease=%v xfabe=%v qq=%v gdstudio=%v\n",
+	fmt.Printf("[Source] %q - %q | kuwo=%v kugou=%v netease=%v xfabe=%v qq=%v gdstudio=%v mp3api=%v\n",
 		song, singer, srcEnabled("kuwo"), srcEnabled("kugou"),
-		srcEnabled("netease"), srcEnabled("xfabe"), srcEnabled("qq"), srcEnabled("gdstudio"))
+		srcEnabled("netease"), srcEnabled("xfabe"), srcEnabled("qq"),
+		srcEnabled("gdstudio"), srcEnabled("mp3api"))
 
 	// ---- 前段：只要真原唱 ----
 	if srcEnabled("kuwo") {
@@ -303,6 +306,14 @@ func requestAndCacheMusic(song, singer string) MusicItem {
 	// 前面都不通时退回 GD Studio 公益音源（境外主要靠它）
 	if srcEnabled("gdstudio") {
 		if item := GDStudioSearch(song, singer); item.Title != "" {
+			return item
+		}
+	}
+	// mp3.994938.xyz（yt-dlp 兜底）：YouTube 曲库关键词直搜取第一条，
+	// 国内/国外服务器都能直连（境外实测比境内还快）。首次冷启动 13s+，
+	// 上游缓存后秒回，故只放后段兜底。KEY 走 MUSIC_MP3API_KEY，未配置自动跳过。
+	if srcEnabled("mp3api") {
+		if item := MP3ApiSearch(song, singer); item.Title != "" && item.AudioURL != "" {
 			return item
 		}
 	}
@@ -364,7 +375,7 @@ func streamConvertAudio(inputURL, outputFile string) error {
 
 // 实时流式转码到 HTTP Writer（边下载边播放！）
 func streamConvertToWriter(inputURL string, w http.ResponseWriter) error {
-	fmt.Printf("[Info] Live streaming from URL: %s\n", inputURL)
+	fmt.Printf("[Info] Live streaming from URL: %s\n", mp3ApiMaskKey(inputURL))
 
 	// ffmpeg 边下载边转码，输出到 stdout
 	cmd := exec.Command("ffmpeg",

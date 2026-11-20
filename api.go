@@ -241,7 +241,7 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Printf("[Stream Live] Starting live stream from: %s\n", remoteURL)
+	fmt.Printf("[Stream Live] Starting live stream from: %s\n", mp3ApiMaskKey(remoteURL))
 
 	// 4. 实时流式转码
 	if err := streamConvertToWriter(remoteURL, w); err != nil {

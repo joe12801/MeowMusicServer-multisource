@@ -2,7 +2,7 @@
 
 给嵌入式设备（ESP32 等）用的局域网音乐流媒体服务器。
 
-**核心改造：把原来单一的音源换成了「酷我 → 网易云直连 → 小枫 xfabe → QQ 音乐 → 酷狗 → 网易云本地 API → 酷我宽容模式 → GD Studio → yuafeng」九层自动回退链路，并加了一套选曲打分算法，解决点歌时最常见的两个问题——「搜不到」和「放错版本」。**
+**核心改造：把原来单一的音源换成了「酷我 → 网易云直连 → 小枫 xfabe → QQ 音乐 → 酷狗 → 网易云本地 API → 酷我宽容模式 → GD Studio → mp3.994938.xyz → yuafeng」十层自动回退链路，并加了一套选曲打分算法，解决点歌时最常见的两个问题——「搜不到」和「放错版本」。**
 
 实测 35 首中文/粤语/日语歌曲（热门 + 冷门独立音乐混合），全部命中正确歌手与正确时长，首字节耗时 **0.5–1.4 秒**。
 
@@ -27,7 +27,7 @@
 
 ## 音源链路
 
-同一条链路上跑九个源，前五个是「严格模式」（只要原唱），后面才是宽容兜底。
+同一条链路上跑十个源，前五个是「严格模式」（只要原唱），后面才是宽容兜底。
 
 ```
   点歌请求（song + singer）
@@ -70,11 +70,17 @@
                      ▼
  ┌───────────────────────────────────────────┐
  │ ⑧ GD Studio         公益聚合源               │
- │   境外部署时唯一能用的（境内四家都限地域）    │
+ │   境外部署时主力（境内四家都限地域）          │
  └───────────────────┬───────────────────────┘
                      ▼
  ┌───────────────────────────────────────────┐
- │ ⑨ yuafeng           最后兜底                 │
+ │ ⑨ mp3.994938.xyz    自建 yt-dlp 接口        │
+ │   YouTube 关键词直搜取第一条，国内外都可用   │
+ │   冷启动 13s+，上游缓存后秒回               │
+ └───────────────────┬───────────────────────┘
+                     ▼
+ ┌───────────────────────────────────────────┐
+ │ ⑩ yuafeng           最后兜底                 │
  └───────────────────────────────────────────┘
 ```
 
@@ -218,7 +224,35 @@ https://music-api.gdstudio.xyz/api.php
 
 **境外部署时它是主力，但不是唯一能用的**：酷我大多返回 `code=407 仅限中国大陆地区使用`，网易云直连对境外 IP 返回加密响应，QQ 的 vkey 取不到，酷狗只给片段。代码里对酷我做了地域判定，检测到 407/433 就在本进程内停用，不再每次白等。境外应该**主动精简音源**，原因和实测数据见下面「境外部署实测」一节。
 
-### ⑨ yuafeng
+### ⑨ mp3.994938.xyz `mp3api.go`（自建 yt-dlp 接口）
+
+```
+GET https://mp3.994938.xyz/api/music?q=<歌名 歌手>&api_key=<KEY>
+```
+
+基于 yt-dlp + ffmpeg 的自建服务：服务端搜 YouTube 取第一条，下载转码成 MP3 直接回
+`audio/mpeg` 二进制流（不是 JSON），所以拿不到元数据，MusicItem 用点歌原文、Duration 置 0。
+
+实测（2026-11-20）：
+
+| 场景 | 首字节 | 说明 |
+|---|---|---|
+| 上游已缓存 | 0.3~0.9s | 支持 Range / 206 |
+| 冷启动（新歌首次） | 13~22s | yt-dlp 下载 + ffmpeg 转码 |
+| 本机端到端 `/stream_live` | 8~22s | 探测 + ffmpeg 转码全程 |
+| 境外 jd5 直连 | 0.24~0.25s | health / 音频 Range，比境内还快 |
+
+用法极简（用户指定）：只传 `q` 和 `api_key`。代码里为了「真的能出声才算命中」，
+会先探一次 64KB 流（顺便触发上游缓存），探不出来就返回空继续走后面的源。
+
+配置（KEY 不硬编码、不进 git）：
+
+```bash
+MUSIC_MP3API_KEY=xxxx            # 必填，不配置则本源自动跳过
+MUSIC_MP3API_BASE=https://mp3.994938.xyz   # 可选，默认即此
+```
+
+### ⑩ yuafeng
 
 `api.yuafeng.cn` / `api-v2.yuafeng.cn` 的免费接口，限流严重，只作最后手段。
 
@@ -315,7 +349,7 @@ https://music-api.gdstudio.xyz/api.php
 
 ## 音源开关（排障用）
 
-默认九条链路全开。想定位「到底是哪个源在出货」或临时关掉某个不稳定的源，用环境变量收窄：
+默认十条链路全开。想定位「到底是哪个源在出货」或临时关掉某个不稳定的源，用环境变量收窄：
 
 ```bash
 # 只开酷我
@@ -328,12 +362,12 @@ MUSIC_SOURCES=netease,qq ./MeowMusicServer
 MUSIC_SOURCES=kuwo,xfabe,gdstudio,yuafeng ./MeowMusicServer
 ```
 
-可用值：`kuwo` `netease` `xfabe` `qq` `kugou` `gdstudio` `yuafeng`。（`netease` 同时控制「直连」和「本地 API」两条网易云链路。）
+可用值：`kuwo` `netease` `xfabe` `qq` `kugou` `gdstudio` `mp3api` `yuafeng`。（`netease` 同时控制「直连」和「本地 API」两条网易云链路。）
 
 日志里每个请求都会先打一行当前开关状态，便于确认配置生效：
 
 ```
-[Source] "晴天" - "周杰伦" | kuwo=true kugou=true netease=true xfabe=true qq=true gdstudio=true
+[Source] "晴天" - "周杰伦" | kuwo=true kugou=true netease=true xfabe=true qq=true gdstudio=true mp3api=true
 [Kuwo] cand #1 score=170 fatal=false "晴天" - "周杰伦" (叶惠美, 269s)
 [Kuwo] HIT #1 "晴天" - "周杰伦" (269s, score=170)
 ```
@@ -355,6 +389,7 @@ MUSIC_SOURCES=kuwo,xfabe,gdstudio,yuafeng ./MeowMusicServer
 | 酷狗 | 能取链，但只给 **228s 片段**；更糟的是它排在 GDStudio 前面，把 GDStudio 的 326s 完整原唱挤掉 | **关闭** |
 | 小枫 xfabe | 405 限流后静默 15 分钟，开销近零；接口恢复后能补 VIP 曲 | 保留 |
 | GD Studio | 境外主力，原唱/翻唱都能出 | 保留 |
+| mp3.994938.xyz | 境外直连比境内还快（音频首字节 0.25s），YouTube 曲库覆盖广；冷启动 13s+ | **启用**，放 GDStudio 之后兜底 |
 | yuafeng | 最后兜底 | 保留 |
 
 推荐用 systemd drop-in 固化，别改主 unit：
@@ -362,7 +397,8 @@ MUSIC_SOURCES=kuwo,xfabe,gdstudio,yuafeng ./MeowMusicServer
 ```ini
 # /etc/systemd/system/meow-music.service.d/sources.conf
 [Service]
-Environment=MUSIC_SOURCES=kuwo,xfabe,gdstudio,yuafeng
+Environment=MUSIC_SOURCES=kuwo,xfabe,gdstudio,mp3api,yuafeng
+Environment=MUSIC_MP3API_KEY=<你的KEY>
 ```
 
 ```bash
