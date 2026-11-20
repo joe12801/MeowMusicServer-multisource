@@ -257,11 +257,26 @@ func srcNoiseOf(name, album, song string) (int, bool, bool) {
 //  9. mp3.994938.xyz —— 自建 yt-dlp 接口，关键词直搜取第一条，国内外都可用；
 //     冷启动 13s+，上游缓存后秒回，作 GDStudio 之后的兜底。
 // 10. yuafeng   —— 最后兜底，能出什么算什么。
+//
+// 临时调整：设 MUSIC_MP3API_FIRST=1 可把 mp3.994938.xyz 提到整条链路最前
+// （其它源仍在后面兜底），去掉环境变量重启即恢复，不必回滚二进制。
 func requestAndCacheMusic(song, singer string) MusicItem {
-	fmt.Printf("[Source] %q - %q | kuwo=%v kugou=%v netease=%v xfabe=%v qq=%v gdstudio=%v mp3api=%v\n",
+	first := mp3ApiFirst()
+	fmt.Printf("[Source] %q - %q | kuwo=%v kugou=%v netease=%v xfabe=%v qq=%v gdstudio=%v mp3api=%v first=%v\n",
 		song, singer, srcEnabled("kuwo"), srcEnabled("kugou"),
 		srcEnabled("netease"), srcEnabled("xfabe"), srcEnabled("qq"),
-		srcEnabled("gdstudio"), srcEnabled("mp3api"))
+		srcEnabled("gdstudio"), srcEnabled("mp3api"), first)
+
+	// 临时前置：先试自建 yt-dlp 源，命中就直接返回；没命中继续原有链路。
+	// 后段不再重复探一次，避免同一请求里双倍冷启动等待。
+	mp3ApiTried := false
+	if first && srcEnabled("mp3api") {
+		mp3ApiTried = true
+		fmt.Printf("[Source] mp3api 临时前置优先\n")
+		if item := MP3ApiSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+			return item
+		}
+	}
 
 	// ---- 前段：只要真原唱 ----
 	if srcEnabled("kuwo") {
@@ -312,7 +327,7 @@ func requestAndCacheMusic(song, singer string) MusicItem {
 	// mp3.994938.xyz（yt-dlp 兜底）：YouTube 曲库关键词直搜取第一条，
 	// 国内/国外服务器都能直连（境外实测比境内还快）。首次冷启动 13s+，
 	// 上游缓存后秒回，故只放后段兜底。KEY 走 MUSIC_MP3API_KEY，未配置自动跳过。
-	if srcEnabled("mp3api") {
+	if srcEnabled("mp3api") && !mp3ApiTried {
 		if item := MP3ApiSearch(song, singer); item.Title != "" && item.AudioURL != "" {
 			return item
 		}

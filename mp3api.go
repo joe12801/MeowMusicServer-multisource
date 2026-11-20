@@ -46,6 +46,17 @@ func mp3ApiKey() string {
 	return strings.TrimSpace(os.Getenv("MUSIC_MP3API_KEY"))
 }
 
+// mp3ApiFirst 由 MUSIC_MP3API_FIRST=1 开启：把本源临时提到整条链路最前。
+// 用于「暂时优先试这个源」的场景，其它源仍保留在后面兜底；去掉环境变量
+// 重启即恢复原顺序，不需要重新编译或回滚二进制。
+func mp3ApiFirst() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MUSIC_MP3API_FIRST"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 // mp3ApiMaskKey 日志打码：把 URL 里的 api_key 参数换成 ****，避免 KEY 落进服务日志
 func mp3ApiMaskKey(u string) string {
 	key := mp3ApiKey()

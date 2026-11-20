@@ -250,7 +250,21 @@ GET https://mp3.994938.xyz/api/music?q=<歌名 歌手>&api_key=<KEY>
 ```bash
 MUSIC_MP3API_KEY=xxxx            # 必填，不配置则本源自动跳过
 MUSIC_MP3API_BASE=https://mp3.994938.xyz   # 可选，默认即此
+MUSIC_MP3API_FIRST=1             # 可选：临时把本源提到链路最前
 ```
+
+`MUSIC_MP3API_FIRST=1` 只改优先级，其它九条源仍留在后面兜底，本源探不到音频时
+会自动继续往下走；同一请求里不会在后段再重复探一次。**去掉该环境变量并重启即恢复
+原顺序**，无需回滚二进制：
+
+```bash
+sudo sed -i '/MUSIC_MP3API_FIRST/d' /etc/systemd/system/meowmusic.service.d/mp3api.conf
+sudo systemctl daemon-reload && sudo systemctl restart meowmusic
+```
+
+> 注意：前置后所有点歌都会先走这个源。上游已缓存的歌约 3~9s 出首字节，
+> 全新歌（对方 yt-dlp 下载 + 转码）要 13~22s；日常高频点歌不如酷我 0.5s，
+> 所以只建议作为临时对比/测试用途。
 
 ### ⑩ yuafeng
 
