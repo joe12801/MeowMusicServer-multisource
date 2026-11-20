@@ -367,63 +367,17 @@ func fetchLyricFromYaohu(songName, artistName, dirPath string) bool {
 }
 
 // getRemoteMusicURLOnly 只获取远程音乐URL，不下载不处理（用于实时流式播放）
+//
+// 注意：这里必须和 /stream_pcm 走同一条多源解析链。历史上这个函数自己
+// 硬编码了一套「酷我 -> 网易云 -> GDStudio -> yuafeng」的顺序，导致新增
+// 音源（酷狗/QQ/网易云直连）只对 /stream_pcm 生效，而设备实际播放走的
+// /stream_live 完全用不上，网络日志里看不到任何新源动静。统一到
+// requestAndCacheMusic 之后，两条链路的音源顺序永远一致。
 func getRemoteMusicURLOnly(song, singer string) string {
 	fmt.Printf("[Info] Getting remote music URL for: %s - %s\n", singer, song)
 
-	// 优先走酷我波点通道（不依赖网易云 id，覆盖被下架歌手）
-	if item := KuwoSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+	if item := requestAndCacheMusic(song, singer); item.AudioURL != "" {
 		return item.AudioURL
-	}
-	// 次选本地网易云 API（带 UNM 解灰）
-	if item := NCMSearch(song, singer); item.Title != "" && item.AudioURL != "" {
-		return item.AudioURL
-	}
-	// 退回 GD Studio 公益音源
-	if item := GDStudioSearch(song, singer); item.Title != "" && item.AudioURL != "" {
-		return item.AudioURL
-	}
-
-	// 尝试多个 API
-	apiHosts := []string{
-		"https://api.yuafeng.cn",
-		"https://api-v2.yuafeng.cn",
-	}
-
-	sources := []string{"kuwo", "netease", "migu"}
-	pathMap := map[string]string{
-		"kuwo":    "/API/ly/kwmusic.php",
-		"netease": "/API/ly/wymusic.php",
-		"migu":    "/API/ly/mgmusic.php",
-	}
-
-	client := &http.Client{Timeout: 15 * time.Second}
-
-	for _, host := range apiHosts {
-		for _, source := range sources {
-			path := pathMap[source]
-			apiURL := fmt.Sprintf("%s%s?msg=%s-%s&n=1", host, path, url.QueryEscape(song), url.QueryEscape(singer))
-
-			resp, err := client.Get(apiURL)
-			if err != nil {
-				continue
-			}
-			defer resp.Body.Close()
-
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				continue
-			}
-
-			var response YuafengAPIFreeResponse
-			if err := json.Unmarshal(body, &response); err != nil {
-				continue
-			}
-
-			if response.Data.Music != "" {
-				fmt.Printf("[Success] Got remote URL from %s: %s\n", source, response.Data.Music)
-				return response.Data.Music
-			}
-		}
 	}
 
 	fmt.Println("[Error] Failed to get remote music URL from all APIs")

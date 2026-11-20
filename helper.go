@@ -99,27 +99,211 @@ func readFromCache(path string) (MusicItem, bool) {
 	return getLocalMusicItem(title, artist), true
 }
 
+// srcEnabled 判断某个音源是否被启用（默认全开，可用 MUSIC_SOURCES 收窄便于排障）
+func srcEnabled(name string) bool {
+	list := strings.TrimSpace(os.Getenv("MUSIC_SOURCES"))
+	if list == "" {
+		return true
+	}
+	for _, s := range strings.Split(list, ",") {
+		if strings.EqualFold(strings.TrimSpace(s), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// 多源共用的「版本噪声」判定
+//
+// 起因：酷狗/网易云/QQ 的免费曲池里，同一首歌被大量「二次加工版」占满——
+// 点《成都》给「(2026没有信号巡回演唱会北京站)」、点《大鱼》给「(3D环绕版)」、
+// 点《山海》给「(DJ LayE版)」。这些标题里歌名和歌手都完全对得上，只靠
+// 「歌名归一化 + 歌手匹配」打分会全部判成原唱，设备就放成了演唱会现场。
+//
+// 所以判定分两层：
+//  1. 关键词黑名单（现场/伴奏/改编/DJ…），命中即 fatal；
+//  2. 括号后缀白名单。标题括号里如果写了别的东西，基本就是在告诉你
+//     「这不是原版」；只有「原版/正式版/单曲/Album Version」这类
+//     纯标注性后缀才放行（如《海底 (Single Version)》确实是原曲）。
+//
+// 注意括号必须用**原始标题**取，不能用归一化后的——gdNorm 会把括号
+// 连同内容整段删掉，等于把最重要的版本信息丢了。
+// ---------------------------------------------------------------------------
+
+var srcNoiseWords = []string{
+	"伴奏", "伴唱", "消音", "纯音乐", "ktv", "karaoke", "instrumental",
+	"dj", "铃声", "片段", "试听", "升调", "降调", "加速", "慢速", "变速",
+	"女声", "男声", "童声", "童音", "女版", "男版", "钢琴", "吉他", "古筝",
+	"二胡", "小提琴", "大提琴", "萨克斯", "口琴", "八音盒", "陶笛", "葫芦丝",
+	"架子鼓", "尤克里里", "长笛",
+	"合辑", "串烧", "remix", "混音", "改编", "复刻", "高仿",
+	"车载", "慢摇", "慢四", "慢三", "快四", "舞曲", "广场舞", "交谊舞",
+	"抖音", "快手", "热播", "热歌", "网红", "鬼畜", "变声", "喊麦", "蹦迪",
+	"cctv", "音乐频道", "电台", "春晚", "综艺", "音综", "节目", "纯享",
+	"饭制", "剪辑", "超燃", "燃版", "高燃",
+	"翻自", "翻唱", "cover", "live", "现场", "演唱会", "音乐会", "生日会",
+	"3d", "8d", "环绕", "阿卡贝拉", "acapella", "清唱", "demo", "伴奏带",
+	"0.8x", "0.9x", "1.1x", "1.2x", "降b", "升f",
+}
+
+var srcInstrumentalWords = []string{
+	"伴奏", "伴唱", "消音", "纯音乐", "ktv", "karaoke", "instrumental",
+}
+
+// srcVersionWhitelist 括号里出现这些词，说明只是版本标注而不是二次加工
+var srcVersionWhitelist = []string{
+	"原版", "正式版", "单曲", "single", "studio", "album version",
+	"专辑版", "完整版", "高音质", "无损", "original version", "explicit",
+	"main version", "album ver",
+}
+
+// srcBracketSuffix 取标题里第一段括号内容（半角/全角/方头括号都认）
+func srcBracketSuffix(name string) string {
+	pairs := [][2]string{{"(", ")"}, {"（", "）"}, {"[", "]"}, {"【", "】"}}
+	for _, p := range pairs {
+		i := strings.Index(name, p[0])
+		if i < 0 {
+			continue
+		}
+		j := strings.Index(name[i:], p[1])
+		if j < 0 {
+			return strings.TrimSpace(name[i+len(p[0]):])
+		}
+		return strings.TrimSpace(name[i+len(p[0]) : i+j])
+	}
+	return ""
+}
+
+// srcTitleScore 歌名比对，返回 (分数, 是否 fatal)。
+//
+// 「包含匹配」不能直接给高分：QQ/酷狗上大量结果是**视频标题**而不是歌曲名，
+// 典型如搜《麒麟》拿到「《麒麟》我自有一口气 一剑开天门」（102 秒切片）。
+// 这类标题把歌名当引子，后面挂一长串描述，归一化后仍然「包含」歌名，
+// 只按包含关系打分会稳稳命中。所以再加一道长度比例闸门：
+// 标题比歌名长出一大截（超过 1.6 倍）就不认。
+func srcTitleScore(gotName, wantName string) (int, bool) {
+	switch {
+	case gotName == wantName:
+		return 100, false
+	case strings.Contains(gotName, wantName) || strings.Contains(wantName, gotName):
+		gr := len([]rune(gotName))
+		wr := len([]rune(wantName))
+		if wr > 0 && gr > wr*8/5 {
+			return -80, true
+		}
+		return 50, false
+	default:
+		return -45, false
+	}
+}
+
+// srcNoiseOf 返回 (扣分, 是否 fatal, 是否无人声)
+func srcNoiseOf(name, album, song string) (int, bool, bool) {
+	lowerName := strings.ToLower(name)
+	lowerAlbum := strings.ToLower(album)
+	lowerSong := strings.ToLower(song)
+
+	for _, w := range srcNoiseWords {
+		if strings.Contains(lowerSong, w) {
+			continue // 用户自己就在搜伴奏/DJ 版
+		}
+		if strings.Contains(lowerName, w) || strings.Contains(lowerAlbum, w) {
+			noVocal := false
+			for _, iw := range srcInstrumentalWords {
+				if w == iw {
+					noVocal = true
+					break
+				}
+			}
+			return -100, true, noVocal
+		}
+	}
+
+	// 括号后缀不在白名单，当作二次加工版处理。
+	// 用户自己搜的歌名里就带这个后缀时放行（例如直接搜「起风了 (旧版)」）。
+	if suffix := strings.ToLower(srcBracketSuffix(name)); suffix != "" &&
+		!strings.Contains(lowerSong, suffix) {
+		okSuffix := false
+		for _, w := range srcVersionWhitelist {
+			if strings.Contains(suffix, w) {
+				okSuffix = true
+				break
+			}
+		}
+		if !okSuffix {
+			return -90, true, false
+		}
+	}
+	return 0, false, false
+}
+
 // Request and cache music from API
+//
+// 分两段：前段全是「严格模式」，只收真原唱；后段才是宽容兜底。
+// 这样《理想三旬》这种酷我只收了 Live 版/翻唱版的情况，会先把机会
+// 让给 QQ / 网易云（它们有 210 秒的原版），而不是直接放半首 Live。
+//
+//  1. 酷我（严格）—— 唯一能覆盖付费大牌（周杰伦/陈奕迅）的通道，返回完整 320k，
+//     正常 0.5s 命中，绝大多数点歌在这一步结束。
+//  2. 网易云直连 —— 不依赖本地服务，覆盖「有版权且免 VIP」的曲目。
+//  3. QQ 音乐 —— 只对免费曲有效，但对独立/民谣/网络歌曲覆盖极好（实测冷门 6/10）。
+//  4. 酷狗     —— 曲库最厚，但热门曲绝大多数要付费，实测冷门仅 1/10，只作补充。
+//  5. 网易云本地 API —— 若同机跑了 ncm 服务则用（带 UNM 解灰），没跑则瞬间返回空。
+//  6. 酷我（宽容）—— 上面全空时，用 Live/翻唱版顶一下，能听比没歌强。
+//  7. GD Studio —— 公益聚合源，境外环境下是唯一能用的（酷我/酷狗/QQ 都限大陆）。
+//  8. yuafeng   —— 最后兜底，能出什么算什么。
 func requestAndCacheMusic(song, singer string) MusicItem {
-	// 优先走酷我波点通道：不依赖网易云 id，能覆盖被网易云整批下架的歌手（如周杰伦），
-	// 返回完整 320k 曲目，实测比网易云链路更快（~0.5s）
-	if item := KuwoSearch(song, singer); item.Title != "" && item.AudioURL != "" {
-		return item
-	}
-	// 退回本地网易云 API（带 UNM 解灰，能跨源补齐无版权歌曲）
-	if item := NCMSearch(song, singer); item.Title != "" {
-		return item
-	}
-	// 网易云不通时退回 GD Studio 公益音源
-	if item := GDStudioSearch(song, singer); item.Title != "" {
-		return item
-	}
-	// Try different sources in priority order
-	sources := []string{"kuwo", "netease", "migu", "baidu"}
-	for _, source := range sources {
-		item := YuafengAPIResponseHandler(source, song, singer)
-		if item.Title != "" {
+	fmt.Printf("[Source] %q - %q | kuwo=%v kugou=%v netease=%v qq=%v gdstudio=%v\n",
+		song, singer, srcEnabled("kuwo"), srcEnabled("kugou"),
+		srcEnabled("netease"), srcEnabled("qq"), srcEnabled("gdstudio"))
+
+	// ---- 前段：只要真原唱 ----
+	if srcEnabled("kuwo") {
+		if item := KuwoSearchStrict(song, singer); item.Title != "" && item.AudioURL != "" {
 			return item
+		}
+	}
+	if srcEnabled("netease") {
+		if item := NeteaseSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+			return item
+		}
+	}
+	if srcEnabled("qq") {
+		if item := QQMusicSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+			return item
+		}
+	}
+	if srcEnabled("kugou") {
+		if item := KugouSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+			return item
+		}
+	}
+	// 本地网易云 API（带 UNM 解灰，能跨源补齐无版权歌曲）
+	if srcEnabled("netease") {
+		if item := NCMSearch(song, singer); item.Title != "" {
+			return item
+		}
+	}
+
+	// ---- 后段：宽容兜底 ----
+	if srcEnabled("kuwo") {
+		if item := KuwoSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+			return item
+		}
+	}
+	// 前面都不通时退回 GD Studio 公益音源（境外主要靠它）
+	if srcEnabled("gdstudio") {
+		if item := GDStudioSearch(song, singer); item.Title != "" {
+			return item
+		}
+	}
+	// 最后兜底：yuafeng 免费接口
+	if srcEnabled("yuafeng") {
+		for _, source := range []string{"kuwo", "netease", "migu", "baidu"} {
+			if item := YuafengAPIResponseHandler(source, song, singer); item.Title != "" {
+				return item
+			}
 		}
 	}
 	return MusicItem{}

@@ -16,11 +16,31 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// kwBlocked 表示酷我通道当前不可用（通常是服务器在境外，取链返回 407 地域限制）。
+// 置位后本进程内直接跳过酷我，避免每首歌都白等 5-10 秒超时。
+// 也可以用环境变量 MUSIC_SOURCE_MODE=overseas 在启动时强制跳过。
+var kwBlocked atomic.Bool
+
+func init() {
+	if strings.EqualFold(os.Getenv("MUSIC_SOURCE_MODE"), "overseas") {
+		kwBlocked.Store(true)
+		fmt.Println("[Kuwo] MUSIC_SOURCE_MODE=overseas, 跳过酷我通道")
+	}
+}
+
+// kwIsRegionBlock 判断是不是地域限制类错误码
+func kwIsRegionBlock(code int) bool {
+	return code == 407 || code == 433
+}
 
 type kwSong struct {
 	RID      string
@@ -117,6 +137,17 @@ func kwSearch(song, singer string) []kwSong {
 		}
 	}
 	return out
+}
+
+// kwFatalArtistMarkers 歌手字段里出现这些词，说明这条是翻唱/搬运的拼接条目，
+// 即便歌名歌手都对得上也不能用。
+//
+// 实测踩坑：《理想三旬》− 陈鸿宇，酷我有一条把歌手写成
+// 「陈鸿宇&翻唱者：王煜航」、时长只有 130 秒（正片 210 秒）的条目。
+// 歌手字段「包含陈鸿宇」所以 kwArtistMatch 判定通过，得分 160 排到第一，
+// 结果设备放出来是半首翻唱。这类信息是上传者自己塞的，只能按关键词挡。
+var kwFatalArtistMarkers = []string{
+	"翻唱", "cover", "karaoke", "伴奏", "dj", "电音", "remix", "改编", "合辑", "串烧",
 }
 
 // 纯器乐标记：这些版本没有人声，不能当「翻唱」用
@@ -227,6 +258,17 @@ func kwScoreTrack(t *kwSong, song, singer string) (int, bool) {
 			score -= 20 // 歌手字段为空，多半是搬运/翻唱
 		} else {
 			score -= 70 // 换了个歌手唱，基本可以认定不是原唱
+		}
+	}
+
+	// 歌手字段被上传者塞成「陈鸿宇&翻唱者：王煜航」这种，整条判死
+	lowerArtistAll := strings.ToLower(t.Artist)
+	for _, m := range kwFatalArtistMarkers {
+		if strings.Contains(lowerArtistAll, m) {
+			// 罚到阈值以下，连第二轮「翻唱顶上」的机会都不给
+			score -= 200
+			fatal = true
+			break
 		}
 	}
 
@@ -358,30 +400,64 @@ func kwBodianHeaders() map[string]string {
 	}
 }
 
-// kwAdFree 触发一次广告解锁，结果本身不用，失败也不影响后面对免费曲的取链
-func kwAdFree() {
+// kwAdFree 触发一次广告解锁，结果本身不用，失败也不影响后面对免费曲的取链。
+//
+// 为什么必须只调一次：解锁状态是按 devid 绑定在服务端的，一次调用长期有效。
+// 早期实现是「每取一条链接就解锁一次」，等于把首字节时间平白拉长了 3~5 秒
+// （实测海阔天空/起风了/生僻字 首字节 5.8~6.3s，而解锁只需一次的歌只要 0.9s）。
+// 现在用 sync.Once 保证整个进程只解锁一次；只有取链返回 20018（服务端认为
+// 未解锁）时才强制重解一次。
+var (
+	kwAdOnce   sync.Once
+	kwAdMu     sync.Mutex
+	kwAdLastAt time.Time
+)
+
+func kwAdFreeReal() {
 	adURL := "http://bd-api.kuwo.cn/api/service/advert/watch" +
 		"?uid=-1&token=&timestamp=1724306124436&sign=15a676d66285117ad714e8c8371691da"
 	h := map[string]string{
-		"plat":           "ar",
-		"channel":        "aliopen",
-		"devid":          kwDeviceID,
-		"ver":            "3.9.0",
-		"qimei36":        kwQimei,
-		"content-type":   "application/json; charset=utf-8",
+		"plat":         "ar",
+		"channel":      "aliopen",
+		"devid":        kwDeviceID,
+		"ver":          "3.9.0",
+		"qimei36":      kwQimei,
+		"content-type": "application/json; charset=utf-8",
 	}
 	body := `{"type":5,"subType":5,"musicId":0,"adToken":""}`
 	if _, err := kwRequestWithUA(adURL, "POST", "Dart/2.19 (dart:io)", h, body); err != nil {
 		fmt.Printf("[Kuwo] adfree error: %v\n", err)
 	}
+	kwAdMu.Lock()
+	kwAdLastAt = time.Now()
+	kwAdMu.Unlock()
+}
+
+func kwAdFree() {
+	kwAdOnce.Do(kwAdFreeReal)
+}
+
+// kwAdFreeRefresh 服务端认为未解锁时重解，但 60 秒内不重复打，避免被风控
+func kwAdFreeRefresh() {
+	kwAdMu.Lock()
+	if time.Since(kwAdLastAt) < time.Minute {
+		kwAdMu.Unlock()
+		return
+	}
+	kwAdMu.Unlock()
+	kwAdFreeReal()
 }
 
 // kwBodianURL 用 rid 换完整音源的直链
 func kwBodianURL(rid string) string {
+	return kwBodianURLDepth(rid, 0)
+}
+
+func kwBodianURLDepth(rid string, depth int) string {
 	raw := "http://bd-api.kuwo.cn/api/play/music/v2/audioUrl?&br=320kmp3&musicId=" + rid
 	signed := kwSign(raw)
 
-	kwAdFree() // 付费曲必须先解锁，否则返回 20018
+	kwAdFree() // 付费曲必须先解锁，否则返回 20018（进程内只解一次）
 	body, err := kwRequestWithUA(signed, "GET", "Dart/2.19 (dart:io)", kwBodianHeaders(), "")
 	if err != nil {
 		fmt.Printf("[Kuwo] bodian error: %v\n", err)
@@ -397,7 +473,20 @@ func kwBodianURL(rid string) string {
 		fmt.Printf("[Kuwo] bodian json error: %v\n", err)
 		return ""
 	}
+	if resp.Code == 20018 && depth == 0 {
+		// 服务端不认之前的解锁状态，重解一次再试
+		fmt.Printf("[Kuwo] 取链返回 20018，重新解锁后重试\n")
+		kwAdFreeRefresh()
+		return kwBodianURLDepth(rid, 1)
+	}
 	if resp.Code != 200 || !strings.HasPrefix(resp.Data.AudioURL, "http") {
+		// 407/433：境外 IP 被版权地域限制，立即停用酷我，别再把时间耗在重试上
+		if kwIsRegionBlock(resp.Code) {
+			if !kwBlocked.Swap(true) {
+				fmt.Printf("[Kuwo] 地域限制(code=%d)，本进程内停用酷我，后续改走其它音源\n", resp.Code)
+			}
+			return ""
+		}
 		fmt.Printf("[Kuwo] bodian code=%d body=%.120s\n", resp.Code, string(body))
 		return ""
 	}
@@ -413,7 +502,21 @@ func kwBodianURL(rid string) string {
 // 分数不够的一律不试，宁可返回空交给下一层音源，也不要放一首完全不相干的歌
 // （曾经因为放宽到「凑合放」，把《后来遇见他》放成了《大梦归》）。
 func KuwoSearch(song, singer string) MusicItem {
+	return kuwoResolve(song, singer, false)
+}
+
+// KuwoSearchStrict 只要原唱，不接受 Live/翻唱/DJ 这类替代版本。
+// 用在多源链的前段：先让各源都试一遍真原唱，都不行再用 KuwoSearch 的宽容模式。
+func KuwoSearchStrict(song, singer string) MusicItem {
+	return kuwoResolve(song, singer, true)
+}
+
+func kuwoResolve(song, singer string, strict bool) MusicItem {
 	if strings.TrimSpace(song) == "" {
+		return MusicItem{}
+	}
+	// 已判定地域受限（境外服务器）时直接跳过，交给后面的音源
+	if kwBlocked.Load() {
 		return MusicItem{}
 	}
 	list := kwSearch(song, singer)
@@ -432,9 +535,12 @@ func KuwoSearch(song, singer string) MusicItem {
 			queue = append(queue, t)
 		}
 	}
-	for _, t := range ranked {
-		if t.fatal && !t.noVocal && t.score >= 40 {
-			queue = append(queue, t)
+	if !strict {
+		// 宽容模式才允许「有人声的翻唱/Live 版」顶上；纯器乐任何模式都不进
+		for _, t := range ranked {
+			if t.fatal && !t.noVocal && t.score >= 40 {
+				queue = append(queue, t)
+			}
 		}
 	}
 	if len(queue) > 6 {
