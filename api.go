@@ -220,32 +220,38 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. 检查缓存是否存在
-	dirName := fmt.Sprintf("./files/cache/music/%s-%s", singer, song)
-	cachedFile := filepath.Join(dirName, "music.mp3")
+	// 缓存路径：./files/cache/music/<singer>-<song>/music.mp3
+	cachedFile := musicCacheFile(song, singer)
+
+	// 1. 缓存命中：定长返回（带 Content-Length，设备按长度读完即结束）
 	if _, err := os.Stat(cachedFile); err == nil {
-		// 缓存存在，直接返回文件
 		fmt.Printf("[Stream Live] Serving from cache: %s\n", cachedFile)
-		w.Header().Set("Content-Type", "audio/mpeg")
-		http.ServeFile(w, r, cachedFile)
+		if err := serveCachedAudio(w, cachedFile); err != nil {
+			fmt.Printf("[Stream Live] Serve cache error: %v\n", err)
+		}
 		return
 	}
 
-	// 2. 缓存不存在，获取远程URL并实时流式转码
+	// 2. 缓存不存在：获取远程URL → 完整转码落盘 → 定长返回
 	fmt.Printf("[Stream Live] Cache miss, fetching from API...\n")
 
-	// 调用枫雨API获取远程音乐URL（不下载，只获取URL）
 	remoteURL := getRemoteMusicURLOnly(song, singer)
 	if remoteURL == "" {
 		http.Error(w, "Failed to get remote music URL", http.StatusNotFound)
 		return
 	}
 
-	fmt.Printf("[Stream Live] Starting live stream from: %s\n", mp3ApiMaskKey(remoteURL))
+	fmt.Printf("[Stream Live] Transcoding from: %s\n", mp3ApiMaskKey(remoteURL))
 
-	// 4. 实时流式转码
-	if err := streamConvertToWriter(remoteURL, w); err != nil {
-		fmt.Printf("[Stream Live] Error: %v\n", err)
-		// 错误可能已经发送了部分数据，无法再发送错误响应
+	// 完整转码到本地缓存（带超时 + 去重锁，不会因设备断开而挂死）
+	if err := ensureMusicCache(remoteURL, cachedFile); err != nil {
+		fmt.Printf("[Stream Live] Transcode error: %v\n", err)
+		http.Error(w, "Transcode failed", http.StatusInternalServerError)
+		return
+	}
+
+	// 定长返回给设备
+	if err := serveCachedAudio(w, cachedFile); err != nil {
+		fmt.Printf("[Stream Live] Serve error: %v\n", err)
 	}
 }
