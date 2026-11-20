@@ -216,7 +216,7 @@ https://music-api.gdstudio.xyz/api.php
 
 并发 2 个就可能 503，已做降并发 + 短超时 + 空结果重试 + 音源冷却（连续失败 2 次冷却 15 分钟），只当最后兜底。
 
-**境外部署时它是唯一能用的**：酷我返回 `code=407 仅限中国大陆地区使用`，酷狗 / QQ 同样限地域。代码里对酷我做了地域判定，检测到 407/433 就在本进程内停用，不再每次白等 5~10 秒。
+**境外部署时它是主力，但不是唯一能用的**：酷我大多返回 `code=407 仅限中国大陆地区使用`，网易云直连对境外 IP 返回加密响应，QQ 的 vkey 取不到，酷狗只给片段。代码里对酷我做了地域判定，检测到 407/433 就在本进程内停用，不再每次白等。境外应该**主动精简音源**，原因和实测数据见下面「境外部署实测」一节。
 
 ### ⑨ yuafeng
 
@@ -309,13 +309,13 @@ https://music-api.gdstudio.xyz/api.php
 | QQ 音乐 | 6/10 | 免费曲池对独立音乐覆盖最好 |
 | 酷狗 | 1/10 | 冷门曲几乎都要付费 |
 
-没有原唱版权时，按配置允许回退到翻唱/Live 版本（⑦ 酷我宽容模式与 ⑦⑧）。
+没有原唱版权时，按配置允许回退到翻唱/Live 版本（⑦ 酷我宽容模式与 ⑧⑨）。
 
 ---
 
 ## 音源开关（排障用）
 
-默认八个源全开。想定位「到底是哪个源在出货」或临时关掉某个不稳定的源，用环境变量收窄：
+默认九条链路全开。想定位「到底是哪个源在出货」或临时关掉某个不稳定的源，用环境变量收窄：
 
 ```bash
 # 只开酷我
@@ -324,8 +324,8 @@ MUSIC_SOURCES=kuwo ./MeowMusicServer
 # 只开网易云直连 + QQ
 MUSIC_SOURCES=netease,qq ./MeowMusicServer
 
-# 部署在境外（酷我/酷狗/QQ 全部限地域），直接只留公益源
-MUSIC_SOURCES=gdstudio,yuafeng ./MeowMusicServer
+# 部署在境外：实测最优组合（详见下节）
+MUSIC_SOURCES=kuwo,xfabe,gdstudio,yuafeng ./MeowMusicServer
 ```
 
 可用值：`kuwo` `netease` `xfabe` `qq` `kugou` `gdstudio` `yuafeng`。（`netease` 同时控制「直连」和「本地 API」两条网易云链路。）
@@ -333,12 +333,58 @@ MUSIC_SOURCES=gdstudio,yuafeng ./MeowMusicServer
 日志里每个请求都会先打一行当前开关状态，便于确认配置生效：
 
 ```
-[Source] "晴天" - "周杰伦" | kuwo=true kugou=true netease=true qq=true gdstudio=true
+[Source] "晴天" - "周杰伦" | kuwo=true kugou=true netease=true xfabe=true qq=true gdstudio=true
 [Kuwo] cand #1 score=170 fatal=false "晴天" - "周杰伦" (叶惠美, 269s)
 [Kuwo] HIT #1 "晴天" - "周杰伦" (269s, score=170)
 ```
 
 `MUSIC_SOURCE_MODE=overseas` 是另一层开关：启动时直接跳过酷我，避免在境外每首歌都白等一次 407。
+
+---
+
+## 境外部署实测：必须精简音源
+
+在 jd5（马来西亚出口）上把 v13 九个源全开，反而比旧版本更慢。逐个抓日志后发现，
+**三个源在境外是纯浪费，一个源会拉低音质**：
+
+| 源 | 境外实际表现 | 处理 |
+|---|---|---|
+| 酷我 | 多数曲目 `code=407` 地域限制，但少数能出（实测《起风了》312s 命中） | 保留，代码撞 407 会自动停用 |
+| 网易云直连 | `music.163.com` 对境外 IP 返回**加密的 `result` 字符串**（`{"result":"35b174…"}`），JSON 解析直接失败 | **关闭** |
+| QQ 音乐 | 搜索正常返回 15 条，甚至有 324s 的原唱候选，但 `pay_play==0` 的 vkey 取链全部为空，`all candidates unusable` | **关闭** |
+| 酷狗 | 能取链，但只给 **228s 片段**；更糟的是它排在 GDStudio 前面，把 GDStudio 的 326s 完整原唱挤掉 | **关闭** |
+| 小枫 xfabe | 405 限流后静默 15 分钟，开销近零；接口恢复后能补 VIP 曲 | 保留 |
+| GD Studio | 境外主力，原唱/翻唱都能出 | 保留 |
+| yuafeng | 最后兜底 | 保留 |
+
+推荐用 systemd drop-in 固化，别改主 unit：
+
+```ini
+# /etc/systemd/system/meow-music.service.d/sources.conf
+[Service]
+Environment=MUSIC_SOURCES=kuwo,xfabe,gdstudio,yuafeng
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart meow-music
+```
+
+实测对比（服务器本机 curl `/stream_live`，首字节；每轮先预热一首）：
+
+| 歌曲 | 九源全开 | 精简四源 |
+|---|---|---|
+| 晴天 / 周杰伦 | 3.59s | **1.54s** |
+| 海阔天空 / Beyond | 6.21s / 820KB（228s 片段） | **2.59s / 1184KB（326s 完整）** |
+| Lemon / 米津玄師 | 2.83s | **1.36s** |
+| 芒种 / 音阙诗听 | 3.54s | **1.46s** |
+| 云烟成雨 / 房东的猫 | 6.13s | **1.44s** |
+
+从国内跨公网直连 jd5（设备实际使用路径）：晴天 1.91s、海阔天空 2.15s。
+
+> 冷启动第一首仍会慢一些（酷我要先撞一次 407、xfabe 要先撞一次 405、GDStudio 要预热），
+> 实测 5~8 秒；之后进入稳态就是上表的 1.4~2.6 秒。周杰伦的《青花瓷》在境外只有
+> GDStudio 的翻唱版（`青花瓷 (原唱：周杰倫) - Hyperentropist`），约 5 秒，这是曲库本身
+> 没有真原唱，不是链路问题。
 
 ---
 
