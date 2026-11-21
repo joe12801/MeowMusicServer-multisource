@@ -1960,7 +1960,10 @@
             const btn = document.getElementById('addToPlaylistList');
             if (btn) btn.innerHTML = '<div class="loading">正在加入 0/' + songs.length + '...</div>';
             let ok = 0, fail = 0, done = 0;
-            for (const s of songs) {
+            // 服务端会把新收进的歌插到歌单最前面，所以批量添加要从最后一首往回提交，
+            // 这样整批加完后顺序和搜索结果一致，且整批都排在歌单最前面。
+            for (let si = songs.length - 1; si >= 0; si--) {
+                const s = songs[si];
                 const title = s.title || s.Title || '';
                 const artist = s.artist || s.Artist || '';
                 const rawUrl = s.url || s.link || s.audio_url || s.audio_full_url ||

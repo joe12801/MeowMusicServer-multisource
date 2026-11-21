@@ -861,6 +861,9 @@ docker compose logs -f
 
 完整路由见 `main.go` / `api.go` / `index.go`。
 
+> **歌单排序**：新收进的歌曲一律插到歌单**最前面**（`playlist.go` 的 `prependSong`），自建歌单和「我喜欢」收藏行为一致，历史歌曲的既有顺序不变。
+> 前端批量「加入歌单」时按倒序提交（`theme/full-app.html`），这样整批加完后顺序与搜索结果一致，且整批都排在最前面。
+
 ---
 
 ## 与 ESP32 固件对接

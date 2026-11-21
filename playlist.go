@@ -28,6 +28,16 @@ type PlaylistManager struct {
 
 var playlistManager *PlaylistManager
 
+// prependSong 把歌曲插到列表最前面（新收进的歌排第一）。
+// 用原地搬移而不是 append([]MusicItem{song}, list...)，
+// 后者每加一首都要重新分配整块内存，几百首的歌单会明显变慢。
+func prependSong(list []MusicItem, song MusicItem) []MusicItem {
+	list = append(list, MusicItem{})
+	copy(list[1:], list[:len(list)-1])
+	list[0] = song
+	return list
+}
+
 // InitPlaylistManager initializes the playlist manager
 func InitPlaylistManager() {
 	playlistManager = &PlaylistManager{
@@ -104,7 +114,8 @@ func (pm *PlaylistManager) AddToPlaylist(playlistName string, song MusicItem) er
 		}
 	}
 
-	playlist.Songs = append(playlist.Songs, song)
+	// 最新收进的歌曲排到最前面
+	playlist.Songs = prependSong(playlist.Songs, song)
 	return pm.saveToFile()
 }
 
@@ -591,7 +602,8 @@ func (pm *PlaylistManager) AddSongToUserPlaylist(userID, playlistID string, song
 				}
 			}
 
-			playlist.Songs = append(playlist.Songs, song)
+			// 最新收进的歌曲排到最前面
+			playlist.Songs = prependSong(playlist.Songs, song)
 			playlist.UpdatedAt = time.Now()
 			return pm.saveUserPlaylists()
 		}
