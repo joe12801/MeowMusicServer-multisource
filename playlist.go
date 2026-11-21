@@ -840,3 +840,65 @@ func HandleDeleteUserPlaylist(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleGetPlaylistSongs 按歌单名返回精简歌曲列表，专供 ESP32 播放使用。
+// 只返回 title/artist 两个字段，避免把每首歌的 5 个长 URL 一起序列化，
+// 否则 60 首歌的全量 JSON 约 30KB，ESP32 同步拉取+解析会饿死音频任务导致卡死。
+// 鉴权由 AuthMiddleware 完成，userID 从 X-User-ID 读取（X-Device-Token 会被自动转换）。
+func HandleGetPlaylistSongs(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("X-User-ID")
+	if userID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// 优先从 query 取；为空则从 POST JSON body 取（ESP32 用 POST 传中文歌单名，避免URL编码）
+	name := r.URL.Query().Get("name")
+	if name == "" && (r.Method == http.MethodPost || r.Method == http.MethodGet) {
+		body, err := io.ReadAll(r.Body)
+		if err == nil && len(body) > 0 {
+			var req struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(body, &req) == nil {
+				name = req.Name
+			}
+		}
+		defer r.Body.Close()
+	}
+	playlists := playlistManager.GetUserPlaylists(userID)
+	if len(playlists) == 0 {
+		json.NewEncoder(w).Encode([]map[string]string{})
+		return
+	}
+
+	// 精简结构：只有歌名和歌手
+	type slimSong struct {
+		Title  string `json:"title"`
+		Artist string `json:"artist"`
+	}
+
+	// 找同名歌单
+	var target *UserPlaylist
+	if name == "我喜欢" || name == "我喜欢的" || name == "收藏" || name == "favorite" {
+		target = playlists[0] // "我喜欢" 固定是第一个
+	} else {
+		for _, p := range playlists {
+			if p.Name == name {
+				target = p
+				break
+			}
+		}
+	}
+
+	result := []slimSong{}
+	if target != nil {
+		for _, s := range target.Songs {
+			result = append(result, slimSong{Title: s.Title, Artist: s.Artist})
+		}
+	}
+
+	fmt.Printf("[API] GetPlaylistSongs user=%s name=%s -> %d songs\n", userID, name, len(result))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+

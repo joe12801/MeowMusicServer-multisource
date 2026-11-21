@@ -57,6 +57,7 @@ func main() {
 	
 	// User playlist API (requires authentication)
 	http.HandleFunc("/api/user/playlists", AuthMiddleware(HandleGetUserPlaylists))
+	http.HandleFunc("/api/user/playlist/songs", AuthMiddleware(HandleGetPlaylistSongs)) // 按歌单名返回精简歌曲列表（ESP32播放用）
 	http.HandleFunc("/api/user/playlists/create", AuthMiddleware(HandleCreateUserPlaylist))
 	http.HandleFunc("/api/user/playlists/add-song", AuthMiddleware(HandleAddSongToUserPlaylist))
 	http.HandleFunc("/api/user/playlists/remove-song", AuthMiddleware(HandleRemoveSongFromUserPlaylist))
