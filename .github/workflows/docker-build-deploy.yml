@@ -102,11 +102,20 @@ jobs:
             --format '当前 running 镜像: {{.Id}} ({{.Created}})' 2>/dev/null || true
 
       - name: Pull 最新镜像
+        env:
+          GH_TOKEN_FOR_GHCR: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          docker compose \
-            -f "$GITHUB_WORKSPACE/deploy/docker-compose.yml" \
-            --project-directory "$DEPLOY_DIR" \
-            pull
+          set -e
+          COMPOSE="docker compose -f $GITHUB_WORKSPACE/deploy/docker-compose.yml --project-directory $DEPLOY_DIR"
+          if $COMPOSE pull; then
+            echo "✅ 已从 Docker Hub 拉取 $IMAGE_DOCKERHUB:latest"
+          else
+            echo "⚠️ Docker Hub 拉取失败，回落到 GHCR"
+            echo "$GH_TOKEN_FOR_GHCR" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            echo "MEOW_IMAGE=$IMAGE_GHCR:latest" >> "$GITHUB_ENV"
+            $COMPOSE pull
+            echo "✅ 已从 GHCR 拉取"
+          fi
 
       - name: 重建容器
         run: |
