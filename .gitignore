@@ -13,6 +13,11 @@ devices.json
 cache/*
 !cache/.gitkeep
 
+# Docker 运行时数据（本地 compose 用）
+data/
+files/cache/
+files/music/
+
 # 日志
 *.log
 nohup.out

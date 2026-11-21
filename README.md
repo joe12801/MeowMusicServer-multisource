@@ -797,53 +797,69 @@ Linux 下同样可以给它写一个 systemd unit（把 `ExecStart` 换成 `node
 
 ---
 
-### 可选：Docker 部署
+### Docker 部署（镜像 + GitHub Actions 自动发布/部署）
 
-不想装 Go 和 ffmpeg 环境的话，用容器最省事。项目根目录建 `Dockerfile`：
+仓库自带 `Dockerfile`、`docker-compose.yml`（本地开发）与 `deploy/docker-compose.yml`（生产），
+无需在服务器上装 Go 和 ffmpeg。
 
-```dockerfile
-FROM golang:1.25-alpine AS build
-WORKDIR /src
-COPY . .
-RUN go env -w GOPROXY=https://goproxy.cn,direct && \
-    go mod tidy && \
-    CGO_ENABLED=0 go build -o MeowMusicServer .
+**镜像地址**
 
-FROM alpine:3.20
-RUN apk add --no-cache ffmpeg ca-certificates tzdata
-WORKDIR /app
-COPY --from=build /src/MeowMusicServer .
-COPY --from=build /src/files ./files
-COPY --from=build /src/frontend ./frontend
-COPY --from=build /src/theme ./theme
-ENV PORT=2233
-EXPOSE 2233
-CMD ["./MeowMusicServer"]
-```
+| 仓库 | 地址 | 说明 |
+|---|---|---|
+| Docker Hub | `joe1280/meowmusic:latest` | 主发布地址，多架构 `linux/amd64` + `linux/arm64` |
+| GHCR | `ghcr.io/joe12801/meowmusic:latest` | 同一镜像的备份地址 |
 
-`docker-compose.yml`：
+每次推送 `main` 会自动构建多架构镜像并打上 `latest`、`sha-<短提交>` 标签。
 
-```yaml
-services:
-  meow-music:
-    build: .
-    container_name: meow-music
-    ports:
-      - "2233:2233"
-    environment:
-      - PORT=2233
-      - TZ=Asia/Shanghai
-    volumes:
-      - ./cache:/app/cache          # 音频缓存
-      - ./files:/app/files          # 歌单、用户数据、背景图
-      - ./devices.json:/app/devices.json   # 映射前先建好：echo '{"devices":{}}' > devices.json
-    restart: unless-stopped
-```
+**本地跑（从源码构建）**
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build      # 数据落在 ./data
 docker compose logs -f
 ```
+
+**服务器部署（只拉镜像）**
+
+```bash
+# 目录约定
+#   /vol1/meowmusic/deploy/docker-compose.yml   ← 仓库里的 deploy/docker-compose.yml
+#   /vol1/meowmusic/deploy/.env                 ← 密钥与端口（见下）
+#   /vol1/meowmusic/data/files/                 ← 歌单/用户/设备绑定/背景图
+#   /vol1/meowmusic/data/cache/                 ← 音频缓存
+#   /vol1/meowmusic/data/devices.json           ← 设备绑定表（缺失时先建：echo '{"devices":{}}'）
+
+cd /vol1/meowmusic/deploy
+docker compose pull && docker compose up -d
+```
+
+`deploy/.env` 示例：
+
+```ini
+MEOW_IMAGE=joe1280/meowmusic:latest
+MEOW_PORT=2233
+MEOW_DATA_DIR=/vol1/meowmusic/data
+PLAYLIST_SONGS_MAX=150
+MUSIC_MP3API_KEY=你的key
+```
+
+**自动部署（GitHub Actions）**
+
+`.github/workflows/docker-build-deploy.yml` 分两个 job：
+
+1. `build`：在 GitHub 托管 runner 上用 buildx + QEMU 构建 `amd64/arm64` 镜像，推送到 Docker Hub 与 GHCR
+2. `deploy`：在 NAS 上的自托管 runner（标签 `self-hosted, nas`）执行
+   `docker compose pull && up -d`，随后探测 `http://127.0.0.1:2233/` 做健康检查，失败会打印容器日志
+
+需要在仓库 Secrets 里配好 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`。
+自托管 runner 装在 `/vol1/github-runner`，以 `actions.runner.joe12801-MeowMusicServer-multisource.nas-220` 这个 systemd 服务常驻：
+
+```bash
+sudo /vol1/github-runner/svc.sh status    # 查看状态
+sudo /vol1/github-runner/svc.sh stop      # 暂停部署（不影响线上服务）
+```
+
+> 容器内以 root 运行，绑定的 `data/` 目录权限由容器自行维护；
+> 音频缓存会持续增长，请把 `MEOW_DATA_DIR` 放在大盘上（NAS 上是 `/vol1`，根分区只有 1.5G）。
 
 ---
 

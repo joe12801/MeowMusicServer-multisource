@@ -1,0 +1,35 @@
+# 本地开发用：直接构建当前源码启动
+#
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+# 生产环境请用 deploy/docker-compose.yml（只拉镜像，由 GitHub Actions 自动部署）
+
+name: meowmusic-dev
+
+services:
+  meow-music:
+    build:
+      context: .
+    image: meowmusic:local
+    container_name: meow-music-dev
+    restart: unless-stopped
+    ports:
+      - "${MEOW_PORT:-2233}:2233"
+    environment:
+      PORT: "2233"
+      TZ: Asia/Shanghai
+      PLAYLIST_SONGS_MAX: "${PLAYLIST_SONGS_MAX:-150}"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data/files:/app/files
+      - ./data/cache:/app/cache
+      - ./data/devices.json:/app/devices.json
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2233/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

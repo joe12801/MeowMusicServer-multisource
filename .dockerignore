@@ -1,0 +1,24 @@
+.git
+.gitignore
+.github
+*.md
+
+# 本地产物
+MeowMusicServer
+MeowMusicServer.exe
+MeowMusicServer_*
+*.bak*
+*.log
+serial_*.txt
+
+# 运行时数据与缓存（用 volume 挂载，不打进镜像）
+data/
+cache/
+files/cache/
+files/music/
+
+# 编辑器/系统垃圾
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
