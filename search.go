@@ -16,7 +16,7 @@ type SearchResult struct {
 	Link     string `json:"link"`      // Alternative field
 	LyricURL string `json:"lyric_url"` // Lyrics URL
 	CoverURL string `json:"cover_url"`
-	Duration int    `json:"duration"`  // Duration in seconds
+	Duration int    `json:"duration"` // Duration in seconds
 }
 
 // HandleSearch handles music search requests
@@ -25,9 +25,10 @@ func HandleSearch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	query := r.URL.Query().Get("query")
-	fmt.Printf("[API] Search request: query=%s\n", query)
+	artist := strings.TrimSpace(r.URL.Query().Get("artist"))
+	fmt.Printf("[API] Search request: query=%s artist=%s\n", query, artist)
 
-	if query == "" {
+	if query == "" && artist == "" {
 		json.NewEncoder(w).Encode([]SearchResult{})
 		return
 	}
@@ -39,8 +40,8 @@ func HandleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	base := scheme + "://" + r.Host
 
-	// Search from multiple sources
-	items := searchFromAllSources(query)
+	// Search from multiple sources（歌名+歌手，歌手可为空=只按歌手搜）
+	items := searchFromAllSources(query, artist)
 
 	// Convert to frontend-compatible format（歌名+歌手去重）
 	results := make([]SearchResult, 0, len(items))
@@ -105,13 +106,16 @@ func normalizeDuration(d int) int {
 }
 
 // searchFromAllSources searches music from all available sources
-func searchFromAllSources(query string) []MusicItem {
+// query=歌名(可为空), artist=歌手(可为空)。两者至少一个非空。
+func searchFromAllSources(query, artist string) []MusicItem {
 	var results []MusicItem
 
 	// Source 1: Search from sources.json (local config)
 	sources := readSources()
 	for _, source := range sources {
-		if containsIgnoreCase(source.Title, query) || containsIgnoreCase(source.Artist, query) {
+		titleMatch := query == "" || containsIgnoreCase(source.Title, query)
+		artistMatch := artist == "" || containsIgnoreCase(source.Artist, artist)
+		if titleMatch && artistMatch {
 			item := MusicItem{
 				Title:        source.Title,
 				Artist:       source.Artist,
@@ -138,8 +142,20 @@ func searchFromAllSources(query string) []MusicItem {
 
 	// 本地没有足够结果时，走在线音源
 	if len(results) < 8 {
-		apiResults := searchFromAPI(query)
+		apiResults := searchFromAPI(query, artist)
 		results = append(results, apiResults...)
+	}
+
+	// 歌名+歌手都指定时，按歌手再做一次精准过滤，避免混入其他歌手版本。
+	// 只填歌手时不按歌手过滤（音源本身已按歌手搜），避免音源歌手字段写法差异误杀。
+	if artist != "" && query != "" {
+		filtered := results[:0]
+		for _, item := range results {
+			if containsIgnoreCase(item.Artist, artist) || containsIgnoreCase(artist, item.Artist) {
+				filtered = append(filtered, item)
+			}
+		}
+		results = filtered
 	}
 
 	// Limit total results
@@ -169,10 +185,16 @@ func searchLocalMusic(query string) []MusicItem {
 // qqSearch / kgSearch），它们与 requestAndCacheMusic 同源、稳定可用。
 // 返回的候选只带歌名/歌手/时长，播放 URL 指向 /stream_live，便于复用
 // 那条已经验证过的取链 + 缓存 + 转码链路。
-func searchFromAPI(query string) []MusicItem {
+func searchFromAPI(query, artist string) []MusicItem {
 	query = strings.TrimSpace(query)
-	if query == "" {
+	artist = strings.TrimSpace(artist)
+	if query == "" && artist == "" {
 		return nil
+	}
+	// 各音源函数内部用 song+" "+singer 拼关键词；只填歌手时把歌手放到 song 位
+	song, singer := query, artist
+	if song == "" {
+		song, singer = artist, ""
 	}
 
 	var results []MusicItem
@@ -192,8 +214,8 @@ func searchFromAPI(query string) []MusicItem {
 
 	// 主源：酷我（播放链路首选，搜索接口实测可用、延迟低）
 	if srcEnabled("kuwo") {
-		fmt.Printf("[Search] source=kuwo query=%s\n", query)
-		for _, s := range kwSearch(query, "") {
+		fmt.Printf("[Search] source=kuwo query=%s singer=%s\n", song, singer)
+		for _, s := range kwSearch(song, singer) {
 			add(s.Name, s.Artist, s.Duration)
 			if len(results) >= 20 {
 				break
@@ -203,8 +225,8 @@ func searchFromAPI(query string) []MusicItem {
 
 	// 兜底 1：网易云直连（无版权过滤，能补酷我搜不到的歌）
 	if len(results) < 8 && srcEnabled("netease") {
-		fmt.Printf("[Search] source=netease query=%s\n", query)
-		for _, s := range neSearch(query, "") {
+		fmt.Printf("[Search] source=netease query=%s singer=%s\n", song, singer)
+		for _, s := range neSearch(song, singer) {
 			add(s.Name, s.Artist, s.Duration)
 			if len(results) >= 20 {
 				break
@@ -214,8 +236,8 @@ func searchFromAPI(query string) []MusicItem {
 
 	// 兜底 2：QQ 音乐
 	if len(results) < 8 && srcEnabled("qq") {
-		fmt.Printf("[Search] source=qq query=%s\n", query)
-		for _, s := range qqSearch(query, "") {
+		fmt.Printf("[Search] source=qq query=%s singer=%s\n", song, singer)
+		for _, s := range qqSearch(song, singer) {
 			add(s.Name, s.Artist, s.Duration)
 			if len(results) >= 20 {
 				break
@@ -225,8 +247,8 @@ func searchFromAPI(query string) []MusicItem {
 
 	// 兜底 3：酷狗
 	if len(results) < 8 && srcEnabled("kugou") {
-		fmt.Printf("[Search] source=kugou query=%s\n", query)
-		for _, s := range kgSearch(query, "") {
+		fmt.Printf("[Search] source=kugou query=%s singer=%s\n", song, singer)
+		for _, s := range kgSearch(song, singer) {
 			add(s.Name, s.Artist, s.Duration)
 			if len(results) >= 20 {
 				break
