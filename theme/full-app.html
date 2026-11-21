@@ -416,6 +416,29 @@
             box-shadow: 0 4px 10px var(--shadow-color);
         }
 
+        /* 外部源（YouTube）结果标记 */
+        .src-badge {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 7px;
+            margin-left: 6px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #7f7fd5, #91eae4);
+            color: #fff;
+            vertical-align: middle;
+        }
+
+        .ext-hint {
+            margin-bottom: 14px;
+            padding: 10px 14px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.65);
+            color: #6b7280;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
         .search-btn {
             padding: 0 35px;
             border-radius: 35px;
@@ -1840,6 +1863,7 @@
 
         function displaySearchResults(songs, limit) {
             const hitLimit = limit && songs.length >= limit;
+            const extCount = songs.filter(s => s.source === 'ext').length;
             const bulkBar = `
                 <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                     <span style="font-size: 13px; color: var(--text-secondary, #888);">共 ${songs.length} 首${hitLimit ? '（已达设定的结果数上限）' : ''}</span>
@@ -1847,11 +1871,12 @@
                         ➕ 一键加入歌单
                     </button>
                     ${hitLimit ? '<button class="btn-icon" onclick="setSearchLimit(500); searchMusic()" style="background: rgba(255,255,255,.8); color: var(--tab-active-color,#FF69B4); padding: 9px 16px; border: none; border-radius: 20px; cursor: pointer; font-weight: 600;">显示更多（500）</button>' : ''}
-                </div>`;
+                </div>
+                ${extCount ? `<div class="ext-hint">🌐 其中 ${extCount} 首来自外部源（YouTube），是国内的补充：被下架/被禁的歌只有这里有。首次播放要下载转码，等 10~20 秒是正常的。</div>` : ''}`;
             const html = bulkBar + '<div class="song-list">' + songs.map((song, idx) => `
                 <div class="song-item">
                     <div class="song-info">
-                        <div class="song-title">${song.title || '未知歌曲'}</div>
+                        <div class="song-title">${song.title || '未知歌曲'}${song.source === 'ext' ? ' <span class="src-badge">外部源</span>' : ''}</div>
                         <div class="song-artist">${song.artist || '未知艺术家'}</div>
                     </div>
                     <div class="song-actions">

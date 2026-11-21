@@ -14,6 +14,8 @@ type MusicItem struct {
 	Duration     int    `json:"duration"`
 	FromCache    bool   `json:"from_cache"`
 	IP           string `json:"ip"`
+	// Source 标记来源："ext" = 外部源(mp3api/YouTube)，空 = 国内音源
+	Source string `json:"source,omitempty"`
 }
 
 // User represents a user account

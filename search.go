@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // SearchResult represents a search result with frontend-compatible fields
@@ -19,6 +20,8 @@ type SearchResult struct {
 	LyricURL string `json:"lyric_url"` // Lyrics URL
 	CoverURL string `json:"cover_url"`
 	Duration int    `json:"duration"` // Duration in seconds
+	// Source = "ext" 表示来自外部源（YouTube/mp3api），前端会标出来
+	Source string `json:"source,omitempty"`
 }
 
 // HandleSearch handles music search requests
@@ -84,6 +87,7 @@ func HandleSearch(w http.ResponseWriter, r *http.Request) {
 			LyricURL: item.LyricURL,
 			CoverURL: coverURL,
 			Duration: normalizeDuration(item.Duration),
+			Source:   item.Source,
 		})
 
 		fmt.Printf("[API] Result %d: title=%s, artist=%s, url=%s\n", len(results), item.Title, item.Artist, audioURL)
@@ -278,6 +282,18 @@ func searchFromAPI(query, artist string, limit int) []MusicItem {
 	}
 	remaining := func() int { return limit - len(results) }
 
+	// 外部源（mp3api/YouTube）与国内链路并发跑：正常搜索不增加等待时间，
+	// 只有国内搜不到时才把外部结果提到前面。
+	// 只填歌手时不查外部源——那等于拿歌手名去 YouTube 乱搜，全是噪声。
+	var extCh chan []MusicItem
+	if mp3ApiSearchEnabled() && query != "" {
+		extCh = make(chan []MusicItem, 1)
+		keyword := strings.TrimSpace(song + " " + singer)
+		go func() {
+			extCh <- mp3ApiCandidates(keyword, singer, 8)
+		}()
+	}
+
 	// 大批量（歌手搜索常见几十上百首）优先网易云：曲库最全、支持 offset 翻页。
 	// 小批量仍走酷我主源，响应更快、原唱命中更高。
 	if limit > 30 && srcEnabled("netease") {
@@ -334,8 +350,108 @@ func searchFromAPI(query, artist string, limit int) []MusicItem {
 		}
 	}
 
+	// 外部源结果：与国内链路并发跑，最多等 8 秒（yt-dlp 搜索偶尔要 5~6 秒），
+	// 拿不到就算了，不拖死整个搜索。
+	//   - 国内结果里没有「歌名+歌手」都对得上、且不是 DJ/翻唱版本的 → 外部源提到最前；
+	//   - 已经有正版 → 追加到最后，只当补充版本，不影响原有排序。
+	if extCh != nil {
+		var ext []MusicItem
+		select {
+		case ext = <-extCh:
+		case <-time.After(8 * time.Second):
+			fmt.Printf("[Search] external source timeout, skipped\n")
+		}
+		if len(ext) > 0 {
+			if !domesticHasCleanMatch(results, song, singer) {
+				fmt.Printf("[Search] external source promoted %d candidates to head\n", len(ext))
+				results = append(ext, results...)
+			} else if remaining() > 0 {
+				results = append(results, ext...)
+			}
+		}
+	}
+
 	fmt.Printf("[Search] online sources returned %d candidates\n", len(results))
 	return results
+}
+
+// domesticHasCleanMatch 判断国内结果里有没有「干净的原曲」能顶上。
+//
+// 只看前几条：如果前三条里有一条歌名对得上、且不是 DJ/抖音/超燃/伴奏 这类
+// 二次加工版，就认为国内有这首歌（外部源只当补充）；
+// 否则（典型：被禁歌曲，国内只剩一堆翻唱/DJ 版）就把外部源提到最前面。
+func domesticHasCleanMatch(items []MusicItem, song, singer string) bool {
+	wantTitle := kwNormName(song)
+	wantArtist := strings.TrimSpace(singer)
+	checked := 0
+	for _, it := range items {
+		gotTitle := kwNormName(it.Title)
+		if gotTitle == "" || wantTitle == "" {
+			continue
+		}
+		if !strings.Contains(gotTitle, wantTitle) && !strings.Contains(wantTitle, gotTitle) {
+			continue
+		}
+		if wantArtist != "" &&
+			!containsIgnoreCase(it.Artist, wantArtist) && !containsIgnoreCase(wantArtist, it.Artist) {
+			continue
+		}
+		checked++
+		if !isCoverishTitle(it.Title) {
+			return true
+		}
+		if checked >= 3 {
+			break
+		}
+	}
+	return false
+}
+
+var coverishWords = []string{
+	"dj", "版", "翻唱", "cover", "抖音", "硬曲", "超燃", "remix", "电音",
+	"伴奏", "纯音乐", "instrumental", "karaoke", "ktv", "变调", "加速", "慢速",
+	"女声", "男声", "童声", "合唱", "铃声", "片段", "试听", "混音",
+}
+
+func isCoverishTitle(title string) bool {
+	low := strings.ToLower(title)
+	for _, w := range coverishWords {
+		if strings.Contains(low, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDirectMatch 保留给其它调用方：是否已有「歌名+歌手」都对得上的一条
+func hasDirectMatch(items []MusicItem, song, singer string) bool {
+	wantTitle := kwNormName(song)
+	wantArtist := strings.TrimSpace(singer)
+	if wantTitle == "" {
+		return len(items) > 0
+	}
+	for _, it := range items {
+		gotTitle := kwNormName(it.Title)
+		if gotTitle == "" {
+			continue
+		}
+		titleOK := gotTitle == wantTitle ||
+			strings.Contains(gotTitle, wantTitle) || strings.Contains(wantTitle, gotTitle)
+		if !titleOK {
+			continue
+		}
+		// DJ 版/伴奏/翻唱 这类不算「有这首歌」
+		if _, fatal, _ := srcNoiseOf(it.Title, "", song); fatal {
+			continue
+		}
+		if wantArtist == "" {
+			return true
+		}
+		if containsIgnoreCase(it.Artist, wantArtist) || containsIgnoreCase(wantArtist, it.Artist) {
+			return true
+		}
+	}
+	return false
 }
 
 // containsIgnoreCase checks if a string contains substring (case insensitive)

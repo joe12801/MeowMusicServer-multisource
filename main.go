@@ -42,6 +42,7 @@ func main() {
 	http.HandleFunc("/stream_pcm", apiHandler)
 	http.HandleFunc("/stream_live", streamLiveHandler) // 实时流式转码，边下载边播放
 	http.HandleFunc("/api/search", HandleSearch) // Search API
+	http.HandleFunc("/api/ext_audio", HandleExtAudio) // 外部源(mp3api/YouTube)音频代理
 	
 	// Legacy favorite API (backward compatible)
 	http.HandleFunc("/api/favorite/add", HandleAddToFavorite)
