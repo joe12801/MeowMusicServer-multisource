@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -97,12 +98,24 @@ func qqRequest(rawURL, method string, body []byte, referer string) ([]byte, erro
 }
 
 func qqSearch(song, singer string) []qqSong {
+	return qqSearchLimit(song, singer, 15)
+}
+
+// qqSearchLimit 按需拉取指定条数。实测 n 最大 60（n>60 会被压回 60，
+// n=100 直接返回 0 条），所以这里封顶 60。
+func qqSearchLimit(song, singer string, limit int) []qqSong {
+	if limit <= 0 {
+		limit = 15
+	}
+	if limit > 60 {
+		limit = 60
+	}
 	keyword := strings.TrimSpace(song + " " + singer)
 	// 参数集是实测出来的：带上 remoteplace=txt.yqq.song 或 searchid=0 时，
 	// 接口会稳定返回 0 条（curnum:0），去掉这两个后同样的关键词能返回 15 条。
 	// 不要"补全"成官方网页用的一堆参数，会把结果清零。
-	api := "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?new_json=1&cr=1&p=1&n=15" +
-		"&format=json&w=" + url.QueryEscape(keyword)
+	api := "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?new_json=1&cr=1&p=1&n=" +
+		strconv.Itoa(limit) + "&format=json&w=" + url.QueryEscape(keyword)
 
 	body, err := qqRequest(api, "GET", nil, "https://y.qq.com/")
 	if err != nil {

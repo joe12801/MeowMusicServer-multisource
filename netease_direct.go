@@ -25,6 +25,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -121,10 +122,43 @@ type neSearchResp struct {
 }
 
 func neSearch(song, singer string) []neSong {
+	return neSearchLimit(song, singer, 15)
+}
+
+// neSearchLimit 一次拉取指定条数（网易云单页最多 100 条，用 offset 继续翻页）。
+// 歌手搜索经常要几十上百首，靠这个函数把曲库吃满。
+func neSearchLimit(song, singer string, limit int) []neSong {
+	if limit <= 0 {
+		limit = 15
+	}
+	if limit > 300 {
+		limit = 300
+	}
+	out := make([]neSong, 0, limit)
+	offset := 0
+	for len(out) < limit {
+		batch := 100
+		if rest := limit - len(out); rest < batch {
+			batch = rest
+		}
+		page := neSearchPage(song, singer, offset, batch)
+		if len(page) == 0 {
+			break
+		}
+		out = append(out, page...)
+		if len(page) < batch {
+			break
+		}
+		offset += len(page)
+	}
+	return out
+}
+
+func neSearchPage(song, singer string, offset, limit int) []neSong {
 	neWarmup()
 	keyword := strings.TrimSpace(song + " " + singer)
 	api := "https://music.163.com/api/search/get/web?s=" + url.QueryEscape(keyword) +
-		"&type=1&offset=0&limit=15&total=true"
+		"&type=1&offset=" + strconv.Itoa(offset) + "&limit=" + strconv.Itoa(limit) + "&total=true"
 
 	resp, err := neGet(api, true)
 	if err != nil {

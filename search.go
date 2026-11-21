@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -26,7 +28,8 @@ func HandleSearch(w http.ResponseWriter, r *http.Request) {
 
 	query := r.URL.Query().Get("query")
 	artist := strings.TrimSpace(r.URL.Query().Get("artist"))
-	fmt.Printf("[API] Search request: query=%s artist=%s\n", query, artist)
+	limit := parseSearchLimit(r.URL.Query().Get("limit"))
+	fmt.Printf("[API] Search request: query=%s artist=%s limit=%d\n", query, artist, limit)
 
 	if query == "" && artist == "" {
 		json.NewEncoder(w).Encode([]SearchResult{})
@@ -41,7 +44,7 @@ func HandleSearch(w http.ResponseWriter, r *http.Request) {
 	base := scheme + "://" + r.Host
 
 	// Search from multiple sources（歌名+歌手，歌手可为空=只按歌手搜）
-	items := searchFromAllSources(query, artist)
+	items := searchFromAllSources(query, artist, limit)
 
 	// Convert to frontend-compatible format（歌名+歌手去重）
 	results := make([]SearchResult, 0, len(items))
@@ -105,9 +108,52 @@ func normalizeDuration(d int) int {
 	return d
 }
 
+// 搜索结果条数：默认 20（老行为），Web 端可手动指定，最大 500。
+const (
+	searchDefaultLimit = 20
+	searchMaxLimit     = 500
+)
+
+func parseSearchLimit(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return searchDefaultLimit
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return searchDefaultLimit
+	}
+	if n > searchMaxLimit {
+		return searchMaxLimit
+	}
+	return n
+}
+
 // searchFromAllSources searches music from all available sources
 // query=歌名(可为空), artist=歌手(可为空)。两者至少一个非空。
-func searchFromAllSources(query, artist string) []MusicItem {
+// limit 是期望返回的候选条数（前端可手动指定，默认 20）。
+func searchFromAllSources(query, artist string, limit int) []MusicItem {
+	if limit <= 0 {
+		limit = searchDefaultLimit
+	}
+	if limit > searchMaxLimit {
+		limit = searchMaxLimit
+	}
+
+	// 只按歌手搜时多取一些再筛：音源会混入同名歌曲/翻唱，
+	// 先按「歌手匹配优先」排序再截断，用户拿到的 N 首里绝大多数是本人原唱。
+	// 大批量再多取 50%，抵消多源去重造成的数量损耗。
+	artistOnly := artist != "" && query == ""
+	fetchTarget := limit
+	if artistOnly {
+		fetchTarget = limit * 2
+	} else if limit > 30 {
+		fetchTarget = limit + limit/2
+	}
+	if fetchTarget > 300 {
+		fetchTarget = 300
+	}
+
 	var results []MusicItem
 
 	// Source 1: Search from sources.json (local config)
@@ -130,7 +176,7 @@ func searchFromAllSources(query, artist string) []MusicItem {
 			results = append(results, item)
 
 			// Limit results to prevent too many items
-			if len(results) >= 20 {
+			if len(results) >= fetchTarget {
 				break
 			}
 		}
@@ -140,9 +186,9 @@ func searchFromAllSources(query, artist string) []MusicItem {
 	localItems := searchLocalMusic(query)
 	results = append(results, localItems...)
 
-	// 本地没有足够结果时，走在线音源
-	if len(results) < 8 {
-		apiResults := searchFromAPI(query, artist)
+	// 在线音源补齐到目标条数
+	if len(results) < fetchTarget {
+		apiResults := searchFromAPI(query, artist, fetchTarget-len(results))
 		results = append(results, apiResults...)
 	}
 
@@ -158,9 +204,16 @@ func searchFromAllSources(query, artist string) []MusicItem {
 		results = filtered
 	}
 
+	// 只按歌手搜：歌手对得上的排前面（其余翻唱/同名曲排后面，超出条数时被截掉）
+	if artistOnly && len(results) > 1 {
+		sort.SliceStable(results, func(i, j int) bool {
+			return containsIgnoreCase(results[i].Artist, artist) && !containsIgnoreCase(results[j].Artist, artist)
+		})
+	}
+
 	// Limit total results
-	if len(results) > 20 {
-		results = results[:20]
+	if len(results) > limit {
+		results = results[:limit]
 	}
 
 	return results
@@ -185,11 +238,17 @@ func searchLocalMusic(query string) []MusicItem {
 // qqSearch / kgSearch），它们与 requestAndCacheMusic 同源、稳定可用。
 // 返回的候选只带歌名/歌手/时长，播放 URL 指向 /stream_live，便于复用
 // 那条已经验证过的取链 + 缓存 + 转码链路。
-func searchFromAPI(query, artist string) []MusicItem {
+func searchFromAPI(query, artist string, limit int) []MusicItem {
 	query = strings.TrimSpace(query)
 	artist = strings.TrimSpace(artist)
 	if query == "" && artist == "" {
 		return nil
+	}
+	if limit <= 0 {
+		limit = searchDefaultLimit
+	}
+	if limit > searchMaxLimit {
+		limit = searchMaxLimit
 	}
 	// 各音源函数内部用 song+" "+singer 拼关键词；只填歌手时把歌手放到 song 位
 	song, singer := query, artist
@@ -197,12 +256,18 @@ func searchFromAPI(query, artist string) []MusicItem {
 		song, singer = artist, ""
 	}
 
-	var results []MusicItem
+	results := make([]MusicItem, 0, limit)
+	seen := make(map[string]bool, limit)
 	add := func(title, artist string, duration int) {
 		title = strings.TrimSpace(title)
 		if title == "" {
 			return
 		}
+		key := toLower(title) + "\x00" + toLower(strings.TrimSpace(artist))
+		if seen[key] {
+			return
+		}
+		seen[key] = true
 		results = append(results, MusicItem{
 			Title:        title,
 			Artist:       strings.TrimSpace(artist),
@@ -211,46 +276,59 @@ func searchFromAPI(query, artist string) []MusicItem {
 			AudioFullURL: livePlayURL(title, artist),
 		})
 	}
+	remaining := func() int { return limit - len(results) }
+
+	// 大批量（歌手搜索常见几十上百首）优先网易云：曲库最全、支持 offset 翻页。
+	// 小批量仍走酷我主源，响应更快、原唱命中更高。
+	if limit > 30 && srcEnabled("netease") {
+		fmt.Printf("[Search] source=netease(bulk) query=%s singer=%s limit=%d\n", song, singer, limit)
+		for _, s := range neSearchLimit(song, singer, limit) {
+			add(s.Name, s.Artist, s.Duration)
+			if remaining() <= 0 {
+				break
+			}
+		}
+	}
 
 	// 主源：酷我（播放链路首选，搜索接口实测可用、延迟低）
-	if srcEnabled("kuwo") {
+	if srcEnabled("kuwo") && remaining() > 0 {
 		fmt.Printf("[Search] source=kuwo query=%s singer=%s\n", song, singer)
 		for _, s := range kwSearch(song, singer) {
 			add(s.Name, s.Artist, s.Duration)
-			if len(results) >= 20 {
+			if remaining() <= 0 {
 				break
 			}
 		}
 	}
 
 	// 兜底 1：网易云直连（无版权过滤，能补酷我搜不到的歌）
-	if len(results) < 8 && srcEnabled("netease") {
+	if remaining() > 0 && srcEnabled("netease") {
 		fmt.Printf("[Search] source=netease query=%s singer=%s\n", song, singer)
-		for _, s := range neSearch(song, singer) {
+		for _, s := range neSearchLimit(song, singer, remaining()) {
 			add(s.Name, s.Artist, s.Duration)
-			if len(results) >= 20 {
+			if remaining() <= 0 {
 				break
 			}
 		}
 	}
 
 	// 兜底 2：QQ 音乐
-	if len(results) < 8 && srcEnabled("qq") {
+	if remaining() > 0 && srcEnabled("qq") {
 		fmt.Printf("[Search] source=qq query=%s singer=%s\n", song, singer)
-		for _, s := range qqSearch(song, singer) {
+		for _, s := range qqSearchLimit(song, singer, remaining()) {
 			add(s.Name, s.Artist, s.Duration)
-			if len(results) >= 20 {
+			if remaining() <= 0 {
 				break
 			}
 		}
 	}
 
 	// 兜底 3：酷狗
-	if len(results) < 8 && srcEnabled("kugou") {
+	if remaining() > 0 && srcEnabled("kugou") {
 		fmt.Printf("[Search] source=kugou query=%s singer=%s\n", song, singer)
-		for _, s := range kgSearch(song, singer) {
+		for _, s := range kgSearchLimit(song, singer, remaining()) {
 			add(s.Name, s.Artist, s.Duration)
-			if len(results) >= 20 {
+			if remaining() <= 0 {
 				break
 			}
 		}

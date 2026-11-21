@@ -349,6 +349,73 @@
             color: #999;
         }
 
+        /* 结果数自定义框：数字可直接改，也有常用档位快捷按钮 */
+        .limit-picker {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 9px 14px;
+            background: #fff;
+            border: 2px solid var(--input-border);
+            border-radius: 30px;
+            box-shadow: 0 4px 15px var(--shadow-color);
+            white-space: nowrap;
+        }
+
+        .limit-picker label {
+            font-size: 13px;
+            font-weight: 700;
+            color: #999;
+        }
+
+        .limit-picker input {
+            width: 68px;
+            border: none;
+            outline: none;
+            background: transparent;
+            font-size: 16px;
+            font-weight: 800;
+            color: var(--tab-active-color, #FF69B4);
+            text-align: center;
+            padding: 0;
+        }
+
+        /* 去掉数字输入框的上下箭头，避免挤占宽度 */
+        .limit-picker input::-webkit-outer-spin-button,
+        .limit-picker input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        .limit-presets {
+            display: flex;
+            gap: 5px;
+        }
+
+        .limit-chip {
+            border: none;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 700;
+            padding: 6px 9px;
+            border-radius: 14px;
+            background: var(--tab-active-bg, rgba(255, 255, 255, 0.7));
+            color: var(--tab-active-color, #FF69B4);
+            transition: all 0.2s ease;
+            font-family: inherit;
+        }
+
+        .limit-chip:hover {
+            background: var(--primary-btn-bg);
+            color: #fff;
+        }
+
+        .limit-chip.active {
+            background: var(--primary-btn-bg);
+            color: #fff;
+            box-shadow: 0 4px 10px var(--shadow-color);
+        }
+
         .search-btn {
             padding: 0 35px;
             border-radius: 35px;
@@ -889,6 +956,26 @@
                 border-radius: 25px;
             }
 
+            /* 结果数控件在窄屏占满一行、内部可换行 */
+            .limit-picker {
+                width: 100%;
+                justify-content: space-between;
+                padding: 10px 14px;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+
+            .limit-picker input {
+                width: 52px;
+                font-size: 16px;
+            }
+
+            .limit-presets {
+                margin-left: auto;
+                flex-wrap: wrap;
+                justify-content: flex-end;
+            }
+
             /* 导航标签 - 横向滚动 */
             .nav-tabs {
                 width: 100%;
@@ -1163,6 +1250,17 @@
                         <input type="text" class="search-input" id="artistInput" 
                                placeholder="歌手（可选）" onkeypress="handleSearchKeypress(event)">
                     </div>
+                    <div class="limit-picker">
+                        <label for="limitInput">结果数</label>
+                        <input type="number" id="limitInput" min="1" max="500" step="10" value="50"
+                               onchange="saveSearchLimit()" onkeypress="handleSearchKeypress(event)">
+                        <div class="limit-presets">
+                            <button type="button" class="limit-chip" data-limit="50" onclick="setSearchLimit(50)">50</button>
+                            <button type="button" class="limit-chip" data-limit="100" onclick="setSearchLimit(100)">100</button>
+                            <button type="button" class="limit-chip" data-limit="200" onclick="setSearchLimit(200)">200</button>
+                            <button type="button" class="limit-chip" data-limit="500" onclick="setSearchLimit(500)">全部</button>
+                        </div>
+                    </div>
                     <button class="search-btn" onclick="searchMusic()">搜索</button>
                 </div>
 
@@ -1297,6 +1395,7 @@
         // 初始化检查
         document.addEventListener('DOMContentLoaded', () => {
             applyTheme();
+            initSearchLimit();
             if (token) {
                 checkAuth();
             } else {
@@ -1655,6 +1754,55 @@
             }
         }
 
+        // ===== 结果数设置（可手动指定，按浏览器记住） =====
+        const SEARCH_LIMIT_KEY = 'meow_search_limit';
+        const SEARCH_LIMIT_DEFAULT = 50;
+        const SEARCH_LIMIT_MAX = 500;
+
+        function clampSearchLimit(v) {
+            let n = parseInt(v, 10);
+            if (isNaN(n) || n <= 0) n = SEARCH_LIMIT_DEFAULT;
+            if (n > SEARCH_LIMIT_MAX) n = SEARCH_LIMIT_MAX;
+            return n;
+        }
+
+        function getSearchLimit() {
+            const el = document.getElementById('limitInput');
+            return clampSearchLimit(el ? el.value : SEARCH_LIMIT_DEFAULT);
+        }
+
+        function highlightLimitChip() {
+            const cur = getSearchLimit();
+            document.querySelectorAll('.limit-chip').forEach(chip => {
+                chip.classList.toggle('active', parseInt(chip.dataset.limit, 10) === cur);
+            });
+        }
+
+        function applySearchLimit(n) {
+            const el = document.getElementById('limitInput');
+            if (el) el.value = clampSearchLimit(n);
+            highlightLimitChip();
+        }
+
+        // 点档位按钮：填数字 + 记住
+        function setSearchLimit(n) {
+            applySearchLimit(n);
+            saveSearchLimit();
+        }
+
+        // 手改输入框后同步记忆（change 事件触发）
+        function saveSearchLimit() {
+            const n = getSearchLimit();
+            applySearchLimit(n);
+            try { localStorage.setItem(SEARCH_LIMIT_KEY, String(n)); } catch (e) {}
+        }
+
+        function initSearchLimit() {
+            let saved = null;
+            try { saved = localStorage.getItem(SEARCH_LIMIT_KEY); } catch (e) {}
+            applySearchLimit(saved ? saved : SEARCH_LIMIT_DEFAULT);
+        }
+
         async function searchMusic() {
             const query = document.getElementById('searchInput').value.trim();
             const artist = document.getElementById('artistInput').value.trim();
@@ -1665,18 +1813,21 @@
                 return;
             }
 
+            const limit = getSearchLimit();
+            saveSearchLimit();
+
             const resultsDiv = document.getElementById('searchResults');
-            resultsDiv.innerHTML = '<div class="loading">🔍 搜索中...</div>';
+            resultsDiv.innerHTML = `<div class="loading">🔍 搜索中...（最多 ${limit} 首）</div>`;
 
             try {
-                let url = `/api/search?query=${encodeURIComponent(query)}`;
+                let url = `/api/search?query=${encodeURIComponent(query)}&limit=${limit}`;
                 if (artist) url += `&artist=${encodeURIComponent(artist)}`;
                 const response = await fetch(url);
                 const data = await response.json();
 
                 if (data && data.length > 0) {
                     currentSearchResults = data; // 保存供"一键加入歌单"
-                    displaySearchResults(data);
+                    displaySearchResults(data, limit);
                 } else {
                     currentSearchResults = [];
                     resultsDiv.innerHTML = '<div class="empty-state">未找到结果</div>';
@@ -1687,13 +1838,15 @@
             }
         }
 
-        function displaySearchResults(songs) {
+        function displaySearchResults(songs, limit) {
+            const hitLimit = limit && songs.length >= limit;
             const bulkBar = `
                 <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                    <span style="font-size: 13px; color: var(--text-secondary, #888);">共 ${songs.length} 首</span>
+                    <span style="font-size: 13px; color: var(--text-secondary, #888);">共 ${songs.length} 首${hitLimit ? '（已达设定的结果数上限）' : ''}</span>
                     <button class="btn-icon" onclick="addAllToPlaylist()" style="background: linear-gradient(135deg,#f093fb,#f5576c); color: #fff; padding: 9px 18px; border: none; border-radius: 20px; cursor: pointer; font-weight: 600;">
                         ➕ 一键加入歌单
                     </button>
+                    ${hitLimit ? '<button class="btn-icon" onclick="setSearchLimit(500); searchMusic()" style="background: rgba(255,255,255,.8); color: var(--tab-active-color,#FF69B4); padding: 9px 16px; border: none; border-radius: 20px; cursor: pointer; font-weight: 600;">显示更多（500）</button>' : ''}
                 </div>`;
             const html = bulkBar + '<div class="song-list">' + songs.map((song, idx) => `
                 <div class="song-item">

@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -114,9 +115,40 @@ func kgRequest(rawURL string) ([]byte, error) {
 }
 
 func kgSearch(song, singer string) []kgSong {
+	return kgSearchLimit(song, singer, 15)
+}
+
+// kgSearchLimit 按需拉取指定条数。酷狗单页 pagesize 实测封顶 30，
+// 需要更多时按 page 逐页翻。
+func kgSearchLimit(song, singer string, limit int) []kgSong {
+	if limit <= 0 {
+		limit = 15
+	}
+	if limit > 90 {
+		limit = 90
+	}
 	keyword := strings.TrimSpace(song + " " + singer)
+	out := make([]kgSong, 0, limit)
+	for page := 1; len(out) < limit; page++ {
+		items := kgSearchPage(keyword, page, 30)
+		if len(items) == 0 {
+			break
+		}
+		out = append(out, items...)
+		if len(items) < 30 {
+			break
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func kgSearchPage(keyword string, page, pagesize int) []kgSong {
 	api := "http://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=" +
-		url.QueryEscape(keyword) + "&page=1&pagesize=15&showtype=1"
+		url.QueryEscape(keyword) + "&page=" + strconv.Itoa(page) +
+		"&pagesize=" + strconv.Itoa(pagesize) + "&showtype=1"
 
 	t0 := time.Now()
 	body, err := kgRequest(api)
@@ -133,7 +165,7 @@ func kgSearch(song, singer string) []kgSong {
 		fmt.Printf("[Kugou] search status=%d\n", resp.Status)
 		return nil
 	}
-	fmt.Printf("[Kugou] search(%q) -> %d hits (%v)\n", keyword, len(resp.Data.Info), time.Since(t0).Round(time.Millisecond))
+	fmt.Printf("[Kugou] search(%q) page=%d -> %d hits (%v)\n", keyword, page, len(resp.Data.Info), time.Since(t0).Round(time.Millisecond))
 
 	out := make([]kgSong, 0, len(resp.Data.Info))
 	for _, it := range resp.Data.Info {
