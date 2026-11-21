@@ -802,6 +802,9 @@ Linux 下同样可以给它写一个 systemd unit（把 `ExecStart` 换成 `node
 仓库自带 `Dockerfile`、`docker-compose.yml`（本地开发）与 `deploy/docker-compose.yml`（生产），
 无需在服务器上装 Go 和 ffmpeg。
 
+> 只想照着抄命令部署到别人的服务器？直接看 **[`deploy/README.md`](deploy/README.md)** ——
+> 一页版：前置检查、compose 与 `docker run` 两种方式、验证、升级回滚、备份迁移、排障表。
+
 **镜像地址**
 
 | 仓库 | 地址 | 说明 |
@@ -818,7 +821,7 @@ docker compose up -d --build      # 数据落在 ./data
 docker compose logs -f
 ```
 
-**服务器部署（只拉镜像）**
+**服务器部署（只拉镜像，compose）**
 
 ```bash
 # 目录约定
@@ -826,11 +829,38 @@ docker compose logs -f
 #   /vol1/meowmusic/deploy/.env                 ← 密钥与端口（见下）
 #   /vol1/meowmusic/data/files/                 ← 歌单/用户/设备绑定/背景图
 #   /vol1/meowmusic/data/cache/                 ← 音频缓存
-#   /vol1/meowmusic/data/devices.json           ← 设备绑定表（缺失时先建：echo '{"devices":{}}'）
+#   /vol1/meowmusic/data/devices.json           ← 设备绑定表
+
+mkdir -p /vol1/meowmusic/data/files /vol1/meowmusic/data/cache
+# 必须是「文件」：不存在时 docker 会把挂载点建成同名目录，服务将无法写入设备绑定表
+[ -f /vol1/meowmusic/data/devices.json ] || echo '{"devices":{}}' > /vol1/meowmusic/data/devices.json
 
 cd /vol1/meowmusic/deploy
 docker compose pull && docker compose up -d
 ```
+
+**服务器部署（只拉镜像，一条命令）**
+
+不想装 compose，或只想临时跑一台机器，用等价的 `docker run`：
+
+```bash
+MEOW_HOME=/opt/meowmusic
+mkdir -p $MEOW_HOME/data/files $MEOW_HOME/data/cache
+[ -f $MEOW_HOME/data/devices.json ] || echo '{"devices":{}}' > $MEOW_HOME/data/devices.json
+
+docker run -d --name meow-music --restart unless-stopped \
+  -p 2233:2233 \
+  -e TZ=Asia/Shanghai \
+  -e PLAYLIST_SONGS_MAX=150 \
+  -e MUSIC_MP3API_KEY=你的key \
+  -v $MEOW_HOME/data/files:/app/files \
+  -v $MEOW_HOME/data/cache:/app/cache \
+  -v $MEOW_HOME/data/devices.json:/app/devices.json \
+  joe1280/meowmusic:latest
+```
+
+升级时只需删掉容器后重新执行上面这条 `docker run`（数据都在宿主机目录里，不会丢）：
+`docker rm -f meow-music`。
 
 `deploy/.env` 示例：
 
