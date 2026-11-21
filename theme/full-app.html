@@ -1452,7 +1452,8 @@
             showAuthPage();
             
             // 退出登录时，隐藏主题切换按钮，并强制恢复粉色主题
-            document.querySelector('.theme-switch').style.display = 'none';
+            const switchBtnLogout = document.querySelector('.theme-switch');
+            if (switchBtnLogout) switchBtnLogout.style.display = 'none';
             if (currentTheme === 'blue') {
                 document.body.removeAttribute('data-theme'); // 强制移除蓝色主题属性
                 // 恢复粉色系特效
@@ -1468,10 +1469,12 @@
         function showAppPage() {
             document.getElementById('authPage').style.display = 'none';
             document.getElementById('appPage').style.display = 'block';
-            document.getElementById('username').textContent = currentUser.username;
+            const usernameEl = document.getElementById('username');
+            if (usernameEl && currentUser) usernameEl.textContent = currentUser.username || '';
             
             // 登录成功后显示主题切换按钮，并应用用户保存的主题
-            document.querySelector('.theme-switch').style.display = 'block';
+            const switchBtnShow = document.querySelector('.theme-switch');
+            if (switchBtnShow) switchBtnShow.style.display = 'block';
             applyTheme(); // 重新应用用户的主题设置
             
             loadPlaylists();
