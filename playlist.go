@@ -930,7 +930,9 @@ func HandleGetPlaylistSongs(w http.ResponseWriter, r *http.Request) {
 // playlistSongsMaxForDevice 返回下发给设备的最大歌曲数。
 // 设备端内存吃紧，一次给太多会解析失败导致整个歌单没声音。
 func playlistSongsMaxForDevice() int {
-	const defaultMax = 60
+	// 实测（ESP32-S3，Beyond 歌单 198 首）：60 / 100 / 150 均可正常起播，
+	// 198 首拉到后一声不响。取 150 作为默认值，留一点余量。
+	const defaultMax = 150
 	if v := os.Getenv("PLAYLIST_SONGS_MAX"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			return n
