@@ -17,12 +17,13 @@ import (
 
 // UserStore manages user data
 type UserStore struct {
-	mu       sync.RWMutex
-	Users    map[string]*User // key: user ID
-	Usernames map[string]string // key: username, value: user ID
-	Emails   map[string]string // key: email, value: user ID
-	Sessions map[string]string // key: session token, value: user ID
-	filePath string
+	mu               sync.RWMutex
+	Users            map[string]*User  // key: user ID
+	Usernames        map[string]string // key: username, value: user ID
+	Emails           map[string]string // key: email, value: user ID
+	Sessions         map[string]string // key: session token, value: user ID
+	filePath         string
+	sessionsFilePath string
 }
 
 var userStore *UserStore
@@ -30,18 +31,20 @@ var userStore *UserStore
 // InitUserStore initializes the user store
 func InitUserStore() {
 	userStore = &UserStore{
-		Users:     make(map[string]*User),
-		Usernames: make(map[string]string),
-		Emails:    make(map[string]string),
-		Sessions:  make(map[string]string),
-		filePath:  "./files/users.json",
+		Users:            make(map[string]*User),
+		Usernames:        make(map[string]string),
+		Emails:           make(map[string]string),
+		Sessions:         make(map[string]string),
+		filePath:         "./files/users.json",
+		sessionsFilePath: "./files/sessions.json",
 	}
 
 	// Create files directory if it doesn't exist
 	os.MkdirAll("./files", 0755)
 
-	// Load existing users
+	// Load existing users and sessions
 	userStore.loadFromFile()
+	userStore.loadSessionsFromFile()
 }
 
 // loadFromFile loads users from JSON file
@@ -112,6 +115,49 @@ func (us *UserStore) saveToFile() error {
 	}
 
 	return os.WriteFile(us.filePath, data, 0644)
+}
+
+// loadSessionsFromFile restores persisted login sessions on startup.
+// Sessions reference user IDs, so users must be loaded first.
+func (us *UserStore) loadSessionsFromFile() error {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+
+	data, err := os.ReadFile(us.sessionsFilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var sessions map[string]string
+	if err := json.Unmarshal(data, &sessions); err != nil {
+		return err
+	}
+
+	// Only restore sessions whose user still exists
+	restored := 0
+	for token, userID := range sessions {
+		if _, ok := us.Users[userID]; ok {
+			us.Sessions[token] = userID
+			restored++
+		}
+	}
+	if restored > 0 {
+		fmt.Printf("[Info] Restored %d persisted sessions\n", restored)
+	}
+	return nil
+}
+
+// saveSessionsToFile persists login sessions to disk so they survive restarts.
+// NOTE: Caller must hold the lock!
+func (us *UserStore) saveSessionsToFile() error {
+	data, err := json.MarshalIndent(us.Sessions, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(us.sessionsFilePath, data, 0600)
 }
 
 // generateID generates a random ID
@@ -195,6 +241,7 @@ func (us *UserStore) AuthenticateUser(username, password string) (*User, string,
 	token := generateToken()
 	us.mu.Lock()
 	us.Sessions[token] = user.ID
+	us.saveSessionsToFile()
 	us.mu.Unlock()
 
 	return user, token, nil
@@ -223,6 +270,7 @@ func (us *UserStore) Logout(token string) {
 	us.mu.Lock()
 	defer us.mu.Unlock()
 	delete(us.Sessions, token)
+	us.saveSessionsToFile()
 }
 
 // HTTP Handlers
@@ -230,7 +278,7 @@ func (us *UserStore) Logout(token string) {
 // HandleRegister handles user registration
 func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[API] Register request received from %s\n", r.RemoteAddr)
-	
+
 	if r.Method != http.MethodPost {
 		fmt.Printf("[API] Register: Method not allowed: %s\n", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -282,6 +330,7 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	token := generateToken()
 	userStore.mu.Lock()
 	userStore.Sessions[token] = user.ID
+	userStore.saveSessionsToFile()
 	userStore.mu.Unlock()
 
 	// Initialize user's favorite playlist
@@ -302,7 +351,7 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 // HandleLogin handles user login
 func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[API] Login request received from %s\n", r.RemoteAddr)
-	
+
 	if r.Method != http.MethodPost {
 		fmt.Printf("[API] Login: Method not allowed: %s\n", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -419,10 +468,10 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 				userID := userStore.GetUserIDByUsername(device.Username)
 				if userID != "" {
 					r.Header.Set("X-User-ID", userID)
-					
+
 					// 更新设备最后在线时间
 					dm.UpdateLastSeen(device.MAC)
-					
+
 					next(w, r)
 					return
 				}
