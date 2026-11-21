@@ -101,21 +101,39 @@ func qqSearch(song, singer string) []qqSong {
 	return qqSearchLimit(song, singer, 15)
 }
 
-// qqSearchLimit 按需拉取指定条数。实测 n 最大 60（n>60 会被压回 60，
-// n=100 直接返回 0 条），所以这里封顶 60。
+// qqSearchLimit 按需拉取指定条数。单页 n 实测最大 60（n>60 被压回 60，
+// n=100 直接 0 条），所以每页取 30、按 p 翻页，最多 6 页(180 首)。
 func qqSearchLimit(song, singer string, limit int) []qqSong {
 	if limit <= 0 {
 		limit = 15
 	}
-	if limit > 60 {
-		limit = 60
+	if limit > 180 {
+		limit = 180
 	}
 	keyword := strings.TrimSpace(song + " " + singer)
+	out := make([]qqSong, 0, limit)
+	for page := 1; len(out) < limit; page++ {
+		items := qqSearchPage(keyword, page, 30)
+		if len(items) == 0 {
+			break
+		}
+		out = append(out, items...)
+		if len(items) < 30 {
+			break
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func qqSearchPage(keyword string, page, num int) []qqSong {
 	// 参数集是实测出来的：带上 remoteplace=txt.yqq.song 或 searchid=0 时，
 	// 接口会稳定返回 0 条（curnum:0），去掉这两个后同样的关键词能返回 15 条。
 	// 不要"补全"成官方网页用的一堆参数，会把结果清零。
-	api := "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?new_json=1&cr=1&p=1&n=" +
-		strconv.Itoa(limit) + "&format=json&w=" + url.QueryEscape(keyword)
+	api := "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?new_json=1&cr=1&p=" +
+		strconv.Itoa(page) + "&n=" + strconv.Itoa(num) + "&format=json&w=" + url.QueryEscape(keyword)
 
 	body, err := qqRequest(api, "GET", nil, "https://y.qq.com/")
 	if err != nil {

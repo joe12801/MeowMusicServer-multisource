@@ -1934,7 +1934,7 @@
             if (!songs || songs.length === 0) { alert('没有可加入的歌曲'); return; }
             const btn = document.getElementById('addToPlaylistList');
             if (btn) btn.innerHTML = '<div class="loading">正在加入 0/' + songs.length + '...</div>';
-            let ok = 0, fail = 0;
+            let ok = 0, fail = 0, done = 0;
             for (const s of songs) {
                 const title = s.title || s.Title || '';
                 const artist = s.artist || s.Artist || '';
@@ -1958,6 +1958,11 @@
                     });
                     if (r.ok) ok++; else fail++;
                 } catch (e) { fail++; }
+                done++;
+                // 大歌单几百首时给个进度，避免看起来像卡死
+                if (btn && (done % 5 === 0 || done === songs.length)) {
+                    btn.innerHTML = '<div class="loading">正在加入 ' + done + '/' + songs.length + '...</div>';
+                }
             }
             closeAddToPlaylistModal();
             alert(`加入完成：成功 ${ok} 首${fail ? '，失败 ' + fail + ' 首（可能歌单里已存在）' : ''}`);

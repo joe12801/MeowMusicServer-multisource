@@ -119,13 +119,13 @@ func kgSearch(song, singer string) []kgSong {
 }
 
 // kgSearchLimit 按需拉取指定条数。酷狗单页 pagesize 实测封顶 30，
-// 需要更多时按 page 逐页翻。
+// 需要更多时按 page 逐页翻，最多 5 页(150 首)。
 func kgSearchLimit(song, singer string, limit int) []kgSong {
 	if limit <= 0 {
 		limit = 15
 	}
-	if limit > 90 {
-		limit = 90
+	if limit > 150 {
+		limit = 150
 	}
 	keyword := strings.TrimSpace(song + " " + singer)
 	out := make([]kgSong, 0, limit)
