@@ -672,6 +672,37 @@
         .playlist-name { font-size: 20px; font-weight: 800; color: #444; margin-bottom: 5px; }
         .playlist-count { color: #999; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 5px; }
 
+        /* 歌单展开/收缩 */
+        .playlist-card { margin-bottom: 20px; }
+        .playlist-card .playlist-item { margin-bottom: 0; }
+        .playlist-card.expanded .playlist-item {
+            border-bottom-left-radius: 0;
+            border-bottom-right-radius: 0;
+            border-color: var(--primary-color, #f5576c);
+        }
+        .playlist-toggle {
+            margin-left: auto;
+            font-size: 18px;
+            color: #ccc;
+            transition: transform 0.3s, color 0.3s;
+            padding: 0 5px;
+        }
+        .playlist-card.expanded .playlist-toggle { color: var(--primary-color, #f5576c); }
+        .playlist-songs {
+            display: none;
+            background: rgba(255,255,255,0.92);
+            border: 3px solid var(--primary-color, #f5576c);
+            border-top: none;
+            border-radius: 0 0 35px 35px;
+            padding: 5px 25px 25px 25px;
+            box-shadow: 0 15px 30px rgba(0,0,0,0.06);
+        }
+        .playlist-card.expanded .playlist-songs { display: block; }
+        .playlist-songs-toolbar { display: flex; margin: 12px 0 18px; }
+        .playlist-songs .song-list { gap: 12px; }
+        .playlist-songs .song-item { padding: 14px 20px; border-radius: 20px; }
+        .playlist-songs-empty { color: #999; text-align: center; padding: 25px 10px; font-size: 15px; }
+        
         /* 歌词显示区域 */
         .lyrics-container {
             position: fixed;
@@ -2220,6 +2251,8 @@
         }
 
         // 歌单管理
+        const expandedPlaylistIds = new Set(); // 记录展开的歌单 id
+
         async function loadPlaylists() {
             const listDiv = document.getElementById('playlistsList');
             listDiv.innerHTML = '<div class="loading">加载中...</div>';
@@ -2231,18 +2264,111 @@
                 playlists = await response.json();
 
                 if (playlists && playlists.length > 0) {
-                    const html = playlists.map(pl => `
-                        <div class="playlist-item" onclick='viewPlaylist(${JSON.stringify(pl)})'>
-                            <div class="playlist-name">${pl.name}</div>
-                            <div class="playlist-count">${pl.songs ? pl.songs.length : 0} 首歌曲</div>
-                        </div>
-                    `).join('');
+                    const html = playlists.map((pl, idx) => {
+                        const songs = pl.songs || [];
+                        const expanded = expandedPlaylistIds.has(pl.id);
+                        let songsBody;
+                        if (songs.length > 0) {
+                            const rows = songs.map((song, songIdx) => `
+                                <div class="song-item">
+                                    <div class="song-info">
+                                        <div class="song-title">${song.title || song.Title || '未知歌曲'}</div>
+                                        <div class="song-artist">${song.artist || song.Artist || '未知艺术家'}</div>
+                                    </div>
+                                    <div class="song-actions">
+                                        <button class="btn-icon btn-play" onclick="playPlaylistSong(${idx}, ${songIdx})">播放</button>
+                                        <button class="btn-icon btn-remove" onclick="removeSongFromPlaylist(${idx}, ${songIdx})">删除</button>
+                                    </div>
+                                </div>
+                            `).join('');
+                            songsBody = `
+                                <div class="playlist-songs-toolbar">
+                                    <button class="btn-icon btn-play" onclick="playPlaylistAll(${idx})">▶️ 播放全部 (${songs.length}首)</button>
+                                </div>
+                                <div class="song-list">${rows}</div>`;
+                        } else {
+                            songsBody = '<div class="playlist-songs-empty">这个歌单还没有歌曲</div>';
+                        }
+                        return `
+                            <div class="playlist-card${expanded ? ' expanded' : ''}" id="plcard-${idx}">
+                                <div class="playlist-item" onclick="togglePlaylist(${idx})">
+                                    <div>
+                                        <div class="playlist-name">${pl.name}</div>
+                                        <div class="playlist-count">${songs.length} 首歌曲 · 点击${expanded ? '收起' : '展开'}</div>
+                                    </div>
+                                    <span class="playlist-toggle">${expanded ? '▼' : '▶'}</span>
+                                </div>
+                                <div class="playlist-songs">${songsBody}</div>
+                            </div>`;
+                    }).join('');
                     listDiv.innerHTML = html;
                 } else {
                     listDiv.innerHTML = '<div class="empty-state">还没有歌单</div>';
                 }
             } catch (error) {
                 listDiv.innerHTML = '<div class="empty-state">加载失败</div>';
+            }
+        }
+
+        // 展开/收缩歌单
+        function togglePlaylist(idx) {
+            const pl = playlists[idx];
+            if (!pl) return;
+            const card = document.getElementById('plcard-' + idx);
+            const header = card.querySelector('.playlist-item');
+            const toggle = card.querySelector('.playlist-toggle');
+            const count = header.querySelector('.playlist-count');
+            const songs = pl.songs ? pl.songs.length : 0;
+            if (expandedPlaylistIds.has(pl.id)) {
+                expandedPlaylistIds.delete(pl.id);
+                card.classList.remove('expanded');
+                toggle.textContent = '▶';
+                count.textContent = songs + ' 首歌曲 · 点击展开';
+            } else {
+                expandedPlaylistIds.add(pl.id);
+                card.classList.add('expanded');
+                toggle.textContent = '▼';
+                count.textContent = songs + ' 首歌曲 · 点击收起';
+            }
+        }
+
+        // 播放整个歌单
+        function playPlaylistAll(idx) {
+            const pl = playlists[idx];
+            if (pl && pl.songs && pl.songs.length) {
+                playAll(pl.songs);
+            }
+        }
+
+        // 播放歌单中指定歌曲
+        function playPlaylistSong(idx, songIdx) {
+            const pl = playlists[idx];
+            if (pl && pl.songs && pl.songs[songIdx]) {
+                playFromList(pl.songs, songIdx);
+            }
+        }
+
+        // 从歌单删除单曲
+        async function removeSongFromPlaylist(idx, songIdx) {
+            const pl = playlists[idx];
+            const song = pl && pl.songs ? pl.songs[songIdx] : null;
+            if (!pl || !song) return;
+            const title = song.title || song.Title || '';
+            const artist = song.artist || song.Artist || '';
+            if (!confirm(`确定从歌单「${pl.name}」移除《${title}》吗？`)) return;
+            try {
+                const params = new URLSearchParams({ playlist_id: pl.id, title: title, artist: artist });
+                const response = await fetch('/api/user/playlists/remove-song?' + params.toString(), {
+                    method: 'DELETE',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (response.ok) {
+                    await loadPlaylists(); // 重新加载，展开状态由 expandedPlaylistIds 保留
+                } else {
+                    alert('移除失败：' + (await response.text()));
+                }
+            } catch (error) {
+                alert('移除失败：' + error.message);
             }
         }
 
@@ -2286,9 +2412,6 @@
             }
         }
 
-        function viewPlaylist(playlist) {
-            alert('歌单详情功能开发中...\n\n歌单名：' + playlist.name + '\n歌曲数：' + (playlist.songs ? playlist.songs.length : 0));
-        }
     </script>
 </body>
 </html>
