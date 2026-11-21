@@ -863,6 +863,9 @@ docker compose logs -f
 
 > **歌单排序**：新收进的歌曲一律插到歌单**最前面**（`playlist.go` 的 `prependSong`），自建歌单和「我喜欢」收藏行为一致，历史歌曲的既有顺序不变。
 > 前端批量「加入歌单」时按倒序提交（`theme/full-app.html`），这样整批加完后顺序与搜索结果一致，且整批都排在最前面。
+>
+> **歌单下发限流**：`/api/user/playlist/songs`（设备专用精简接口）默认最多下发 **60 首**，可用环境变量 `PLAYLIST_SONGS_MAX` 调整（`0` = 不限）。
+> 原因：ESP32 会把整包 JSON 一次性解析成 `vector<SongInfo>`，歌单约 200 首时内存不足，表现为「歌单拉下来了但一个音频请求都不发、完全没声音」。网页端 `/api/user/playlists` 不受影响，仍是全量。
 
 ---
 

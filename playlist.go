@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -902,15 +903,39 @@ func HandleGetPlaylistSongs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ESP32 会把整包 JSON 一次性解析成 vector<SongInfo>，歌单太长时内存不够，
+	// 表现为「歌单拉下来了但一个音频请求都不发、完全没声音」（198 首 ≈ 9KB 实测复现）。
+	// 这里默认只下发最前面的若干首（配合头插，就是最新收进的那些），可用
+	// PLAYLIST_SONGS_MAX 环境变量调整，设为 0 表示不限制。
+	maxSongs := playlistSongsMaxForDevice()
+
 	result := []slimSong{}
+	total := 0
 	if target != nil {
-		for _, s := range target.Songs {
+		total = len(target.Songs)
+		for i, s := range target.Songs {
+			if maxSongs > 0 && i >= maxSongs {
+				break
+			}
 			result = append(result, slimSong{Title: s.Title, Artist: s.Artist})
 		}
 	}
 
-	fmt.Printf("[API] GetPlaylistSongs user=%s name=%s -> %d songs\n", userID, name, len(result))
+	fmt.Printf("[API] GetPlaylistSongs user=%s name=%s -> %d/%d songs (limit=%d)\n",
+		userID, name, len(result), total, maxSongs)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+// playlistSongsMaxForDevice 返回下发给设备的最大歌曲数。
+// 设备端内存吃紧，一次给太多会解析失败导致整个歌单没声音。
+func playlistSongsMaxForDevice() int {
+	const defaultMax = 60
+	if v := os.Getenv("PLAYLIST_SONGS_MAX"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return defaultMax
 }
 
