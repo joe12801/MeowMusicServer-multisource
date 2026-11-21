@@ -864,9 +864,12 @@ docker compose logs -f
 > **歌单排序**：新收进的歌曲一律插到歌单**最前面**（`playlist.go` 的 `prependSong`），自建歌单和「我喜欢」收藏行为一致，历史歌曲的既有顺序不变。
 > 前端批量「加入歌单」时按倒序提交（`theme/full-app.html`），这样整批加完后顺序与搜索结果一致，且整批都排在最前面。
 >
-> **歌单下发限流**：`/api/user/playlist/songs`（设备专用精简接口）默认最多下发 **150 首**，可用环境变量 `PLAYLIST_SONGS_MAX` 调整（`0` = 不限）。
+> **歌单分页与下发限流**：`/api/user/playlist/songs`（设备专用精简接口）与 `/api/favorite/list` 均支持分页：
+> 带 `offset` / `limit`（`limit` 默认 50、上限 200）时返回 `{"total":N,"offset":O,"limit":L,"songs":[...]}`，`offset` 基于完整列表，可逐页拉全量；
+> 不带参数时保持老行为（纯数组，且 `/api/user/playlist/songs` 最多下发 `PLAYLIST_SONGS_MAX` 首，默认 150）。
 > 原因：ESP32 会把整包 JSON 一次性解析成 `vector<SongInfo>`，歌单太长时内存不足，表现为「歌单拉下来了但一个音频请求都不发、完全没声音」。
-> 实测同一歌单（198 首）：下发 60 / 100 / **150** 首均可正常起播，下发 **198** 首必现无声，故取 150 留余量。网页端 `/api/user/playlists` 不受影响，仍是全量。
+> 实测同一歌单（198 首）：一次性下发 60 / 100 / 150 首均可正常起播，**198 首必现无声**；
+> 固件从 v1.6.6 起改为每页 50 首分批拉取，内存峰值只有一页，可播完整歌单。网页端 `/api/user/playlists` 不受影响，仍是全量。
 
 ---
 

@@ -423,6 +423,17 @@ func isCoverishTitle(title string) bool {
 	return false
 }
 
+// songTitleMatches 判断一条候选的歌名是否就是要的那首。
+// 允许「晴天」与「晴天 (Live)」这类包含关系，但拦住「灰色轨迹」冒充「長城」。
+func songTitleMatches(gotTitle, wantSong string) bool {
+	got := kwNormName(gotTitle)
+	want := kwNormName(wantSong)
+	if got == "" || want == "" {
+		return got == want
+	}
+	return got == want || strings.Contains(got, want) || strings.Contains(want, got)
+}
+
 // hasDirectMatch 保留给其它调用方：是否已有「歌名+歌手」都对得上的一条
 func hasDirectMatch(items []MusicItem, song, singer string) bool {
 	wantTitle := kwNormName(song)

@@ -418,7 +418,31 @@ func HandleGetFavorites(w http.ResponseWriter, r *http.Request) {
 		if len(playlists) > 0 {
 			favoritePlaylist := playlists[0] // "我喜欢" is always the first playlist
 			fmt.Printf("[API] Returning user %s favorites: %d songs\n", userID, len(favoritePlaylist.Songs))
-			
+
+			// 与 /api/user/playlist/songs 一致：带 offset/limit 时分页返回，
+			// 老固件不传参数仍拿纯数组（收藏也可能很长，同样会撑爆设备解析内存）。
+			offset, limit, paged := parsePageParams(r)
+			if paged {
+				total := len(favoritePlaylist.Songs)
+				start := offset
+				if start > total {
+					start = total
+				}
+				end := start + limit
+				if end > total {
+					end = total
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"total":  total,
+					"offset": start,
+					"limit":  limit,
+					"songs":  favoritePlaylist.Songs[start:end],
+				})
+				return
+			}
+
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			// Return just the songs array for frontend compatibility
@@ -853,6 +877,36 @@ func HandleDeleteUserPlaylist(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 设备侧分页参数
+const (
+	playlistPageDefault = 50  // 不传 limit 时的每页条数
+	playlistPageMax     = 200 // 单次最多下发条数，防止被滥用拉爆设备
+)
+
+// parsePageParams 解析 offset/limit 分页参数。
+// paged=false 表示调用方没要分页（老固件），此时应保持原来的"纯数组 + 单次上限"行为。
+func parsePageParams(r *http.Request) (offset, limit int, paged bool) {
+	q := r.URL.Query()
+	if q.Get("offset") == "" && q.Get("limit") == "" {
+		return 0, 0, false
+	}
+	if v := q.Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			offset = n
+		}
+	}
+	limit = playlistPageDefault
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > playlistPageMax {
+		limit = playlistPageMax
+	}
+	return offset, limit, true
+}
+
 // HandleGetPlaylistSongs 按歌单名返回精简歌曲列表，专供 ESP32 播放使用。
 // 只返回 title/artist 两个字段，避免把每首歌的 5 个长 URL 一起序列化，
 // 否则 60 首歌的全量 JSON 约 30KB，ESP32 同步拉取+解析会饿死音频任务导致卡死。
@@ -903,25 +957,49 @@ func HandleGetPlaylistSongs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// ESP32 会把整包 JSON 一次性解析成 vector<SongInfo>，歌单太长时内存不够，
+	// ESP32 老固件会把整包 JSON 一次性解析成 vector<SongInfo>，条数太多时内存不足，
 	// 表现为「歌单拉下来了但一个音频请求都不发、完全没声音」（198 首 ≈ 9KB 实测复现）。
-	// 这里默认只下发最前面的若干首（配合头插，就是最新收进的那些），可用
-	// PLAYLIST_SONGS_MAX 环境变量调整，设为 0 表示不限制。
+	// maxSongs 只对不分页的老固件生效；新固件用 offset/limit 分页，逐页拉全量。
 	maxSongs := playlistSongsMaxForDevice()
+	offset, limit, paged := parsePageParams(r)
 
 	result := []slimSong{}
 	total := 0
+	start, end := 0, 0
 	if target != nil {
 		total = len(target.Songs)
-		for i, s := range target.Songs {
-			if maxSongs > 0 && i >= maxSongs {
-				break
+		end = total
+		if paged {
+			start = offset
+			if start > total {
+				start = total
 			}
+			end = start + limit
+			if end > total {
+				end = total
+			}
+		} else if maxSongs > 0 && end > maxSongs {
+			end = maxSongs
+		}
+		for _, s := range target.Songs[start:end] {
 			result = append(result, slimSong{Title: s.Title, Artist: s.Artist})
 		}
 	}
 
-	fmt.Printf("[API] GetPlaylistSongs user=%s name=%s -> %d/%d songs (limit=%d)\n",
+	if paged {
+		fmt.Printf("[API] GetPlaylistSongs user=%s name=%s -> page offset=%d limit=%d, %d/%d songs\n",
+			userID, name, start, limit, len(result), total)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"total":  total,
+			"offset": start,
+			"limit":  limit,
+			"songs":  result, // 空时是 []，不是 null
+		})
+		return
+	}
+
+	fmt.Printf("[API] GetPlaylistSongs user=%s name=%s -> %d/%d songs (legacy limit=%d)\n",
 		userID, name, len(result), total, maxSongs)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)

@@ -323,10 +323,19 @@ func requestAndCacheMusic(song, singer string) MusicItem {
 			return item
 		}
 	}
-	// 前面都不通时退回 GD Studio 公益音源（境外主要靠它）
+	// 前面都不通时退回 GD Studio 公益音源（境外主要靠它）。
+	// 但 GDStudio 自己在「找不到同名候选」时会按歌手择优挑一首顶上去
+	// （实测把《灰色轨迹》当成《長城》播出去），所以这里要校验歌名：
+	// 歌名对得上才立即返回；对不上就先记作兜底，继续往下找真原唱（mp3api / yuafeng）。
+	var gdFallback MusicItem
 	if srcEnabled("gdstudio") {
 		if item := GDStudioSearch(song, singer); item.Title != "" {
-			return item
+			if songTitleMatches(item.Title, song) {
+				return item
+			}
+			gdFallback = item
+			fmt.Printf("[Source] GDStudio 返回的是 %q（与 %q 不符），先记作兜底，继续找真原唱\n",
+				item.Title, song)
 		}
 	}
 	// mp3.994938.xyz（yt-dlp 兜底）：YouTube 曲库关键词直搜取第一条，
@@ -344,6 +353,11 @@ func requestAndCacheMusic(song, singer string) MusicItem {
 				return item
 			}
 		}
+	}
+	// 实在找不到同名原唱，再用 GDStudio 那首顶一下（能听比没歌强）
+	if gdFallback.Title != "" {
+		fmt.Printf("[Source] 无同名原唱，兜底采用 GDStudio 的 %q - %q\n", gdFallback.Title, gdFallback.Artist)
+		return gdFallback
 	}
 	return MusicItem{}
 }
