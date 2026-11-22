@@ -127,10 +127,12 @@ jobs:
           COMPOSE="docker compose -f $GITHUB_WORKSPACE/deploy/docker-compose.yml --project-directory $DEPLOY_DIR"
 
           # 依次尝试 ACR → Docker Hub → GHCR，每个源重试 3 次
+          # 只拉 meow-music：lrcapi / gomusic 是 Docker Hub 上的第三方镜像，
+          # 在拉不动 Docker Hub 的机器上会把整个 pull 拖死；它们本地已有，不需要每次更新
           try_pull() {
             for i in 1 2 3; do
               echo "--- 尝试 $1（第 $i 次）---"
-              if MEOW_IMAGE="$1" $COMPOSE pull; then
+              if MEOW_IMAGE="$1" $COMPOSE pull meow-music; then
                 echo "MEOW_IMAGE=$1" >> "$GITHUB_ENV"
                 echo "✅ 拉取成功：$1"
                 return 0
