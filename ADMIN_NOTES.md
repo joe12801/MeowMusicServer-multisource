@@ -714,3 +714,74 @@ F12 → Application → Cookies → 复制该域下全部（关键是 `sessionid
 - `deploy/.env.example`：`FIVESING_ENABLED` 说明
 
 开关：`FIVESING_ENABLED=0` 整源关闭（默认开）。和喜马拉雅一样，**不进「全部」、不进多源兜底链**。
+
+## 十九、汽水第二条取链路径：网页分享页（2026-11-23 凌晨）
+
+起因：参考 CharlesPikachu/musicdl 的 4 条汽水取链路子。其中「官方非 VIP」那条
+是扒网页版分享页 `music.douyin.com/qishui/share/track?track_id=` 里的
+`_ROUTER_DATA`，不经过 go-music-api，也不必处理加密音频。
+
+### 实测结论（东京机器，2026-11-23 04:30）
+
+| 维度 | 池 A：gomusic `/api/v1/music/url` | 池 B：分享页 `_ROUTER_DATA` |
+|---|---|---|
+| 格式 / 码率 | mp3，约 257kbps | mp4 容器 + AAC，约 130kbps |
+| 常见节点 | v3-luna / v5-ex-luna | v11-luna / v26-luna / v5-se-* / v95-se-* |
+| 单次可达率（境外） | 5/5 全部 206 | 3/6（桌面 UA）、1/6（手机 UA） |
+| 依赖 | 需要 gomusic 容器解密 | 无依赖，纯 HTTP |
+
+**所以它不能替代池 A**：码率只有一半，而且命中不通节点的概率更高。
+价值在于两个池的节点分配**完全独立** —— A 落到 v11 时，B 往往能给 v5-se / v26 / v95。
+定位：**兜底池**，不是替代品。
+
+### 内容长度的重要更正
+
+之前笔记写的「未登录也给全长（6.24MB / 194s）」只对**免费曲**成立。
+付费曲两个池都只给约 60 秒试听片段：
+
+| 曲目 | level | 总时长 | previewStart → previewEnd | 实得 |
+|---|---|---|---|---|
+| 红色高跟鞋 | pay | 206.6s | 149.2 → 206.6 | 57.4s / 1.8MB(mp3) / 0.9MB(m4a) |
+| 天龙八部之宿敌 | pay | 263.3s | 163.4 → 223.4 | 60s |
+| 小半 | pay | 297.2s | 143.8 → 173.9 | 30s |
+| 烂奇迹 | free | 207.0s | 0 → 207.0 | 全长 207s |
+
+`group_playable_level` / `previewStart` / `previewEnd` 都在
+`loaderData.track_page.audioWithLyricsOption` 里，换取链路径解决不了。
+
+### 接口
+
+```
+GET https://music.douyin.com/qishui/share/track?track_id=<id>
+UA:  桌面 Chrome（关键！手机 UA 下 6 次有 5 次分到 v11-luna）
+→ 页面里 window._ROUTER_DATA = {...}
+→ loaderData.track_page.audioWithLyricsOption.url
+```
+
+解析坑：`_ROUTER_DATA` 后面是「一段完整 JSON + `</script>`」，
+不能 `json.Unmarshal` 整段（会 `Extra data`），要用 `json.Decoder` 读第一个对象。
+
+### 探活（qishuiProbeURL）
+
+`Range: bytes=0-1` + 3 秒超时，200/206 视为可达。
+起因：命中 v11-luna 是「TCP 连得上但整段无响应」，ffmpeg 要等十几秒才 exit 146，
+代价太高。探活 3 秒内就能下结论，直接换下一个候选。
+
+### 改动
+
+- `qishui.go`
+  - 新增 `qishuiShareURL(id)`：扒分享页、解析 `_ROUTER_DATA`
+  - 新增 `qishuiProbeURL(link)`：2 字节 Range 探活，3s 超时
+  - 新增 `qishuiPickURL(id)`：先池 A 后池 B（最多 3 次换节点），每条探活后再返回；
+    全程 12 秒预算，全部不通则返回第一条非空链接交给 ffmpeg 试
+  - `qishuiResolve` 改用 `qishuiPickURL`，因此 `QishuiSearch` 与 `qishuiRefetchURL`
+    自动获得双池能力
+  - 修正文件头注释里「未登录给全长」的错误结论
+
+### 实测（东京）
+
+```
+分享页 7068138081588611073 → v11-luna（探活失败，符合预期）
+分享页 7705267063577511990 → v95-se-zjwztc-luna（探活通过）
+qishuiPickURL 池A 失败（宿主机无 gomusic）→ 分享页池第 2 次命中 → 探活通过
+```
