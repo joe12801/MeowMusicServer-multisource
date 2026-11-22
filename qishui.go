@@ -260,43 +260,68 @@ func qishuiProbeURL(link string) bool {
 
 // qishuiPickURL 从两个独立取链池里挑一条「探活通过」的直链，返回给转码用。
 //
-// 顺序：先 gomusic 池（mp3 257kbps，音质更好），落了不通节点再换分享页池，
-// 分享页最多换 3 次节点（单次约 50% 可达，3 次全挂的概率约 12%）。
+// 顺序：先 gomusic 池（mp3 257kbps，音质更好），落了不通节点再换分享页池。
+// 分享页那条并发拿 3 份（每次请求都会重新分配节点，单次约 50% 可达），
+// 三份一起探活、取最先返回的可达节点——串行探测最坏要 3×(1s 取页 + 3s 探活)
+// ≈ 12 秒，并发后压到约 4 秒。
+//
 // 全部候选都不通时返回第一条非空链接——让 ffmpeg 去试，比直接报错更接近
 // 原来的行为（有些节点探测失败但能出流）。
-//
-// 整个挑选过程有 12 秒预算上限，命中正常节点时只多花一次探活（约 0.3s）。
 func qishuiPickURL(id string) string {
-	var fallback string
-	deadline := time.Now().Add(12 * time.Second)
+	var (
+		mu       sync.Mutex
+		fallback string
+	)
+	keepFallback := func(link string) {
+		if link == "" {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if fallback == "" {
+			fallback = link
+		}
+	}
 
 	// 池 A：gomusic（音质优先）
 	if link, err := qishuiTrackURL(id); err != nil {
 		fmtLogf("[qishui] 池A 取链失败: %v", err)
 	} else if link != "" {
-		fallback = link
+		keepFallback(link)
 		if qishuiProbeURL(link) {
 			return link
 		}
 		fmtLogf("[qishui] 池A 直链探测不通（命中不可达节点），改用分享页池")
 	}
 
-	// 池 B：分享页，每次请求都会重新分配节点
+	// 池 B：分享页并发 3 路
 	const shareTries = 3
-	for i := 1; i <= shareTries && time.Now().Before(deadline); i++ {
-		link, err := qishuiShareURL(id)
-		if err != nil || link == "" {
+	type shareResult struct {
+		url string
+	}
+	results := make([]shareResult, shareTries)
+	var wg sync.WaitGroup
+	for i := 0; i < shareTries; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			link, err := qishuiShareURL(id)
 			if err != nil {
-				fmtLogf("[qishui] 分享页取链失败（第 %d 次）: %v", i, err)
+				fmtLogf("[qishui] 分享页取链失败（并发第 %d 路）: %v", i+1, err)
+				return
 			}
-			continue
-		}
-		if fallback == "" {
-			fallback = link
-		}
-		if qishuiProbeURL(link) {
-			fmtLogf("[qishui] 分享页池命中可达节点（第 %d 次）", i)
-			return link
+			keepFallback(link)
+			if qishuiProbeURL(link) {
+				results[i].url = link
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for i, r := range results {
+		if r.url != "" {
+			fmtLogf("[qishui] 分享页池命中可达节点（并发第 %d 路）", i+1)
+			return r.url
 		}
 	}
 	return fallback
