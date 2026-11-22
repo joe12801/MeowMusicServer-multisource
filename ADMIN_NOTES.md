@@ -479,3 +479,27 @@ ffprobe 实测 duration=60；CDN 境外可访问，能正常转码）。
 4. 转码失败自动换源重试的可视化（现在日志里有，页面看不到）；
 5. 外部源的可选策略（哪些歌优先走 YouTube、外部源单独限流）；
 6. 换到国内服务器后：汽水扫码登录 + 验证 `searchable=true`。
+
+## 十四、镜像发布到阿里云 ACR + 跨海推送提速（2026-11-22 晚）
+
+把 `meowmusic` 镜像推到阿里云个人版容器镜像服务，作为换机器时的分发通道。
+
+- 地址：`crpi-wv2uaegt8g2y0g3c.cn-guangzhou.personal.cr.aliyuncs.com/joeloveqt-project/meowmusic`
+- 命名空间 `joeloveqt-project`，仓库 **公开**（pull 不用登录，push 才要 `docker login --username=aliyun1109508239`）
+- 标签：`latest`、`20261122-arm64`（最新代码，digest `a47edefb…`）、`patched-20261122-arm64`（现网回滚点，`970ab513…`）
+- 只有 `linux/arm64`：aarch64 机器直接拉；x86 机器必须 `buildx --platform linux/amd64` 重建
+
+三个坑：
+
+1. **首次 push 报 `denied: requested access to the resource is denied`**，不是权限问题，是
+   **仓库不存在**。个人版必须先到控制台「仓库管理 → 创建仓库」（或给命名空间开「自动创建仓库」），
+   仓库类型选**本地仓库**，别绑代码源。
+2. **命名空间不等于登录账号**。登录名是 `aliyun1109508239`，仓库路径里的是 `joeloveqt-project`，
+   两个不一样，tag 写错会一直 denied。
+3. **跨海推送慢到不可用**：东京 → 广州 47MB 的 ffmpeg 层只有 25KB/s。`ss -tin` 诊断出
+   RTT 176ms、重传率 12%、`cwnd:2` —— 典型 CUBIC 在丢包链路上崩掉。`modprobe tcp_bbr` +
+   `sysctl -w net.ipv4.tcp_congestion_control=bbr` 之后飙到 3.5MB/s，几十秒推完。
+   以后这台机器往国内推任何大文件（镜像、备份）都可以先开 BBR。
+
+顺手记一个操作纪律：`pkill -f "docker push"` 会匹配到自己的 `sh -c` 命令行，把自己也杀掉
+（日志里留下 `LATEST_EXIT=143`），要么用 `pkill -f '^docker push'`，要么按 PID 杀。
