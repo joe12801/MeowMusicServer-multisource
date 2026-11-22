@@ -347,10 +347,11 @@ func requestAndCacheMusic(song, singer string) MusicItem {
 			return item
 		}
 	}
-	// 汽水音乐（抖音曲库）：独家曲、下架曲常有，但**未登录只给约 30 秒试听**
-	// （实测 303s 的歌取链只有 471KB）。所以必须排在所有能给完整版的源之后，
-	// 尤其是 mp3api —— 否则它会把能放完整版的结果顶掉，用户听一半就断。
-	// 等在国内服务器上登录成功（cookies.json 里 soda 非空）后，可以再往前提。
+	// 汽水音乐（抖音曲库）：独家曲、下架曲常有。
+	// 曾经未登录只给约 30 秒试听，2026-11-23 复测已能给全长（6.24MB/194s ≈ 257kbps），
+	// 但直链按请求随机分配 CDN 节点，境外约 1/3 落在不通的节点上，
+	// 由 /stream_live 的「换节点重试」兜底（见 qishuiRefetchURL）。
+	// 排序仍放在国内源和 mp3api 之后：国内源更稳，汽水当独家曲的补充。
 	if srcEnabled("qishui") {
 		if item := trySource("qishui", func() MusicItem { return QishuiSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
 			if songTitleMatches(item.Title, song) {
@@ -375,6 +376,39 @@ func requestAndCacheMusic(song, singer string) MusicItem {
 		return gdFallback
 	}
 	return MusicItem{}
+}
+
+// getRemoteMusicURLWithSource 与 getRemoteMusicURLOnly 走同一条多源链路，
+// 但额外返回命中的音源名（MusicItem.Source）。/stream_live 需要它来判断
+// 转码失败后该不该「重新取链换节点」——不同源的可重试性不一样，
+// 见 retryableTranscodeSource。
+func getRemoteMusicURLWithSource(song, singer string) (string, string) {
+	fmt.Printf("[Info] Getting remote music URL for: %s - %s\n", singer, song)
+
+	if item := requestAndCacheMusic(song, singer); item.AudioURL != "" {
+		return item.AudioURL, item.Source
+	}
+
+	fmt.Println("[Error] Failed to get remote music URL from all APIs")
+	return "", ""
+}
+
+// retryableTranscodeSource 转码失败后，是否值得「重新取直链换节点」再试。
+//
+// 只有汽水需要：它的直链由 CDN 就近调度，同一次取链每次请求可能落到不同节点，
+// 境外实测约 1/3 概率命中整段不通的 v11-luna（ffmpeg 直接 exit 146）。
+// 其它源的直链是固定的对象存储地址，换链没有意义；而重跑整条多源链代价太高
+// （每源都有网络往返，冷启动还可能有 13s+ 的源），不能拿它当重试手段。
+func retryableTranscodeSource(source string) bool {
+	return source == sourceQishui
+}
+
+// refetchRemoteURL 转码失败后只针对该源重新取一次直链，不重跑整条多源链路。
+func refetchRemoteURL(song, singer, source string) string {
+	if source == sourceQishui && srcEnabled("qishui") {
+		return qishuiRefetchURL(song, singer)
+	}
+	return ""
 }
 
 // 直接从远程URL流式转码（边下载边转码，超快！）

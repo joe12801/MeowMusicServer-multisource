@@ -243,17 +243,40 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("[Stream Live] Cache miss, fetching from API...\n")
 
-	remoteURL := getRemoteMusicURLOnly(song, singer)
+	remoteURL, srcName := getRemoteMusicURLWithSource(song, singer)
 	if remoteURL == "" {
 		http.Error(w, "Failed to get remote music URL", http.StatusNotFound)
 		return
 	}
 
-	fmt.Printf("[Stream Live] Transcoding from: %s\n", mp3ApiMaskKey(remoteURL))
+	// 转码失败重试：只对「直链按请求随机分配 CDN 节点」的源有意义（目前只有汽水）。
+	// 境外实测汽水约 1/3 概率落到不通的节点（v11-luna 整段超时 → ffmpeg exit 146），
+	// 重取一次直链大概率换到 v3/v5/v26 这类可达节点，重试两次后成功率约 95%。
+	// 其它源直链固定，失败就是真失败，直接返回 500，不做无意义的重试。
+	const maxTranscodeAttempts = 3
+	var transcodeErr error
+	for attempt := 1; attempt <= maxTranscodeAttempts; attempt++ {
+		fmt.Printf("[Stream Live] Transcoding from: %s（第 %d 次，源=%q）\n",
+			mp3ApiMaskKey(remoteURL), attempt, srcName)
 
-	// 完整转码到本地缓存（带超时 + 去重锁，不会因设备断开而挂死）
-	if err := ensureMusicCache(remoteURL, cachedFile); err != nil {
-		fmt.Printf("[Stream Live] Transcode error: %v\n", err)
+		transcodeErr = ensureMusicCache(remoteURL, cachedFile)
+		if transcodeErr == nil {
+			break
+		}
+		if attempt >= maxTranscodeAttempts || !retryableTranscodeSource(srcName) {
+			break
+		}
+
+		fmt.Printf("[Stream Live] 转码失败（%v），重新取链换节点\n", transcodeErr)
+		if next := refetchRemoteURL(song, singer, srcName); next != "" {
+			remoteURL = next
+		} else {
+			// 新链没取到就沿用旧链再试一次，别提前放弃
+			fmt.Printf("[Stream Live] 重新取链为空，沿用原直链重试\n")
+		}
+	}
+	if transcodeErr != nil {
+		fmt.Printf("[Stream Live] Transcode error: %v\n", transcodeErr)
 		http.Error(w, "Transcode failed", http.StatusInternalServerError)
 		return
 	}

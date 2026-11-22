@@ -14,9 +14,12 @@ package main
 //   2. 给播放链路（helper.go 的 requestAndCacheMusic）提供 QishuiSearch；
 //   3. 给搜索聚合（search.go）提供候选列表。
 //
-// 注意：未登录时汽水只给 60 秒试听片段，登录（/tools 页面扫码）后才是完整版。
-// 所以它只排在国内主源之后、mp3api / yuafeng 之前兜底——能听比没歌强，
-// 但不能顶掉能放完整版的源。
+// 注意（2026-11-23 更新）：未登录现在也能拿到完整版（实测 194s 的歌直链 6.24MB、
+// 约 257kbps），不再是早期的 30 秒试听。但直链由 CDN 就近调度，境外约 1/3 概率
+// 落到不通的节点（v11-luna），所以转码失败要换节点重试，见 qishuiRefetchURL。
+//
+// 即便如此，它仍只排在国内主源之后、mp3api / yuafeng 之前兜底——
+// 国内源命中率高、直链稳定，优先它们更划算。
 //
 // 配置：
 //   QISHUI_BASE=http://gomusic:8080   容器地址（默认就是 compose 里的服务名）
@@ -35,6 +38,10 @@ import (
 )
 
 const qishuiDefaultBase = "http://gomusic:8080"
+
+// sourceQishui 音源标识。MusicItem.Source 用它标记「这条来自汽水」，
+// /stream_live 靠它判断转码失败后能否换节点重试。
+const sourceQishui = "qishui"
 
 var qishuiClient = &http.Client{Timeout: 12 * time.Second}
 
@@ -160,8 +167,7 @@ func qishuiScoreTrack(t *qishuiSong, song, singer string) (int, bool) {
 		fatal = true
 	}
 
-	// 汽水自己的时长是整首的长度；未登录拿到的音频只有 60 秒，
-	// 但这里判断不了，交给上层（能播就先播）。
+	// 汽水自己的时长是整首的长度；太短的（<60s）多半是片段/翻唱切片，扣分排掉。
 	if t.Duration > 0 && t.Duration < 60 {
 		score -= 80
 		fatal = true
@@ -295,19 +301,44 @@ func qishuiCandidates(song, singer string, n int) []qishuiSong {
 	return qishuiMatchRank(song, singer, n)
 }
 
-// QishuiSearch 播放链路用：按「歌名 + 歌手」找到一首并取到直链。
-func QishuiSearch(song, singer string) MusicItem {
+// qishuiResolve 搜索 + 打分 + 取直链，是 QishuiSearch 和 qishuiRefetchURL 的公共部分。
+// pick 用于日志/元数据，link 为空表示这次没取到可用直链。
+func qishuiResolve(song, singer string) (*qishuiSong, string) {
 	list := qishuiCandidates(song, singer, 10)
 	if len(list) == 0 {
-		return MusicItem{}
+		return nil, ""
 	}
 	pick := qishuiPick(list, song, singer, 60)
 	if pick == nil {
-		return MusicItem{}
+		return nil, ""
 	}
 	link, err := qishuiTrackURL(pick.ID)
 	if err != nil {
 		fmtLogf("[qishui] 取链失败 %s(%s): %v", pick.Name, pick.ID, err)
+		return pick, ""
+	}
+	return pick, link
+}
+
+// qishuiRefetchURL 在转码失败后重新取一次直链。
+//
+// 汽水的直链由 CDN 就近调度，同一次取链每次请求可能落到不同节点。
+// 境外实测：v3 / v5 / v5-ex / v26-luna 都可达（回归 6.2MB 全长、约 257kbps），
+// 但 v11-luna 从东京整段超时，命中它就 ffmpeg 直接失败。
+// 所以转码失败一次不要放弃，重取直链大概率换到可达节点。
+func qishuiRefetchURL(song, singer string) string {
+	pick, link := qishuiResolve(song, singer)
+	if link == "" {
+		return ""
+	}
+	fmtLogf("[qishui] 重新取链 %q - %q（换 CDN 节点重试）", pick.Name, pick.Artist)
+	return link
+}
+
+// QishuiSearch 播放链路用：按「歌名 + 歌手」找到一首并取到直链。
+func QishuiSearch(song, singer string) MusicItem {
+	pick, link := qishuiResolve(song, singer)
+	if pick == nil || link == "" {
 		return MusicItem{}
 	}
 	fmtLogf("[qishui] 命中 %q - %q (%ds)", pick.Name, pick.Artist, pick.Duration)
@@ -318,7 +349,7 @@ func QishuiSearch(song, singer string) MusicItem {
 		AudioFullURL: link,
 		CoverURL:     pick.Cover,
 		Duration:     pick.Duration,
-		Source:       "qishui",
+		Source:       sourceQishui,
 	}
 }
 
