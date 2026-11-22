@@ -669,3 +669,48 @@ F12 → Application → Cookies → 复制该域下全部（关键是 `sessionid
 - `theme/full-app.html`：筛选栏加「喜马拉雅」按钮 + `SRC_META` 加橙色播放图标徽标
 
 开关：`XIMALAYA_ENABLED=0` 可整源关闭（默认开）。会员内容不绕过付费墙，这是上游本身的限制。
+
+## 十八、新增「5sing」音源（2026-11-23 凌晨）
+
+补充源，来源参考 CharlesPikachu/musicdl 的 `fivesing.py`，**按接口自己重写在 Go 里**
+（musicdl 是 PolyForm Noncommercial 许可、README 禁止捆绑再分发，只做参考不可 vendored）。
+
+5sing 是原创/翻唱/伴奏社区，内容全是用户上传，没有付费墙，和唱片公司曲库不重叠。
+
+### 接口（2026-11-23 东京机器实测）
+
+| 用途 | 请求 | 说明 |
+|---|---|---|
+| 搜索 | `GET http://search.5sing.kugou.com/home/json?keyword=<kw>&sort=1&page=<n>&filter=0&type=0` | 返回 `list[]`：`songId / songName（含 <em> 高亮标签）/ singer / typeEname`；`pageInfo.totalPages` 控翻页，每页 10 条 |
+| 取链 | `GET http://mobileapi.5sing.kugou.com/song/getSongUrl?songid=<id>&songtype=<yc|fc|bz>` | 返回 `data.squrl / hqurl / lqurl`（mp3 https 直链）+ `*_backup` 备用域名；`code=1000` 为成功 |
+
+两个坑：
+
+1. **搜索必须走 http**。`search.5sing.kugou.com` 的证书只签给 `*.kugou.com`，
+   https 直接 `SSL: CERTIFICATE_VERIFY_FAILED / Hostname mismatch`，握手就失败。
+   返回体是公开 JSON，不含任何凭据，走 http 没有额外风险。
+2. **搜索列表没有 duration、没有封面**。时长留 0 交给 `cachedDuration` 兜底；
+   `getSongUrl` 里的 `user.I` 是上传者头像不是专辑图，不拿它当封面。
+
+实测：搜索 `原创` 返回 10 条；取链 `songid=2104925&songtype=yc` → `squrl` 8.16MB mp3，
+直链 `206 audio/mpeg`，境外可完整播放（这点和汽水不同，5sing 没有节点问题）。
+
+### 集成方式
+
+- 播放地址带 `xid`，格式 **`fs:<songId>:<typeEname>`**。取链必须 id + type 一起给，
+  只给 id 取不到、只给歌名更认不出来（歌名是用户自己起的）。
+- `/stream_live` 按前缀分流：`fs:` 开头走 `FiveSingTrackSrc`，纯数字仍走喜马拉雅。
+- 搜索结果里混着伴奏（`typeEname=bz`），默认过滤——本站不标注「伴奏」，
+  用户点进去会听到没有人声的东西；但如果过滤后为空（用户搜的就是伴奏），保留原样。
+- `search.go` 抽出 `addID()` 闭包，喜马拉雅和 5sing 共用（都是「带 id、封面可选」）。
+
+改动清单：
+
+- 新增 `fivesing.go`：`FiveSingSearchLimit()`、`FiveSingTrackSrc()`、`fiveSingTrackXID()`、`FIVESING_ENABLED` 开关
+- `search.go`：`searchOnlySource` 增加 `case "fivesing"`，抽出 `addID` 闭包
+- `api.go`：`/stream_live` 的 `xid` 分支改为按前缀分流（`fs:` / 纯数字）
+- `history.go`：来源白名单加 `fivesing`
+- `theme/full-app.html`：筛选栏加「5sing」按钮 + `SRC_META` 加橙色音符徽标
+- `deploy/.env.example`：`FIVESING_ENABLED` 说明
+
+开关：`FIVESING_ENABLED=0` 整源关闭（默认开）。和喜马拉雅一样，**不进「全部」、不进多源兜底链**。

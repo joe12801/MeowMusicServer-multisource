@@ -284,6 +284,32 @@ func searchOnlySource(only, query, artist string, limit int) []MusicItem {
 			AudioFullURL: livePlayURL(title, artist),
 		})
 	}
+	// addID 追加「带上游 id」的结果（喜马拉雅 / 5sing）。
+	// 这两类内容靠「歌名+歌手」二次解析必然张冠李戴，所以把 id 一路带到 /stream_live。
+	addID := func(src, title, artist string, duration int, cover, xid string) {
+		title = strings.TrimSpace(title)
+		if title == "" || len(out) >= limit {
+			return
+		}
+		if duration <= 0 {
+			duration = cachedDuration(title, artist)
+		}
+		key := toLower(title) + "\x00" + toLower(strings.TrimSpace(artist))
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		playURL := livePlayURLX(title, artist, xid)
+		out = append(out, MusicItem{
+			Title:        title,
+			Artist:       strings.TrimSpace(artist),
+			Duration:     duration,
+			Source:       src,
+			CoverURL:     cover,
+			AudioURL:     playURL,
+			AudioFullURL: playURL,
+		})
+	}
 
 	switch only {
 	case "qishui":
@@ -318,29 +344,13 @@ func searchOnlySource(only, query, artist string, limit int) []MusicItem {
 		// 喜马拉雅带 trackId：播放时按 id 直取，不走「歌名二次解析」，
 		// 否则搜到的播客会被解析成同名的歌。
 		for _, s := range XimalayaSearchLimit(song, singer, limit) {
-			title := strings.TrimSpace(s.Name)
-			if title == "" || len(out) >= limit {
-				continue
-			}
-			duration := s.Duration
-			if duration <= 0 {
-				duration = cachedDuration(title, s.Artist)
-			}
-			key := toLower(title) + "\x00" + toLower(strings.TrimSpace(s.Artist))
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			playURL := livePlayURLX(title, s.Artist, s.ID)
-			out = append(out, MusicItem{
-				Title:        title,
-				Artist:       strings.TrimSpace(s.Artist),
-				Duration:     duration,
-				Source:       sourceXimalaya,
-				CoverURL:     s.Cover,
-				AudioURL:     playURL,
-				AudioFullURL: playURL,
-			})
+			addID(sourceXimalaya, s.Name, s.Artist, s.Duration, s.Cover, s.ID)
+		}
+	case "fivesing":
+		// 5sing 同样带 id（fs:<songId>:<typeEname>）：取链必须 id+type 一起给，
+		// 只给 id 取不到，给歌名更认不出来。时长搜索接口不给，留 0 由缓存兜底。
+		for _, s := range FiveSingSearchLimit(song, singer, limit) {
+			addID(sourceFiveSing, s.Name, s.Artist, 0, "", fiveSingTrackXID(s.ID, s.Type))
 		}
 	}
 	return out

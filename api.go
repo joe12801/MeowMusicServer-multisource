@@ -196,8 +196,9 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	song := queryParams.Get("song")
 	singer := queryParams.Get("singer")
-	// xid：喜马拉雅的 trackId。这类内容（有声书/播客）和音乐源完全不重叠，
-	// 只能按 id 直取，不能靠歌名二次解析。
+	// xid：上游 id。喜马拉雅是纯数字 trackId，5sing 是 fs:<songId>:<typeEname>。
+	// 这类内容（有声书/播客/原创翻唱）和音乐源完全不重叠，只能按 id 直取，
+	// 不能靠歌名二次解析，否则会放成同名的歌。
 	xid := strings.TrimSpace(queryParams.Get("xid"))
 
 	fmt.Printf("[Stream Live] Request: song=%s, singer=%s, xid=%s\n", song, singer, xid)
@@ -248,14 +249,31 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 
 	var remoteURL, srcName string
 	if xid != "" {
-		// 喜马拉雅：按 trackId 直取，不跑多源链路
-		srcName = sourceXimalaya
-		src, err := XimalayaTrackSrc(xid)
-		if err != nil {
-			fmt.Printf("[Stream Live] 喜马拉雅取链失败 xid=%s: %v\n", xid, err)
-			w.Header().Set("X-Source", sourceXimalaya)
-			http.Error(w, err.Error(), http.StatusForbidden)
-			return
+		// 按 xid 直取，不跑多源链路。xid 前缀区分来源：
+		//   fs:...  → 5sing（songId + typeEname）
+		//   纯数字  → 喜马拉雅 trackId
+		var (
+			src string
+			err error
+		)
+		if strings.HasPrefix(xid, fiveSingXIDPrefix) {
+			srcName = sourceFiveSing
+			src, err = FiveSingTrackSrc(xid)
+			if err != nil {
+				fmt.Printf("[Stream Live] 5sing 取链失败 xid=%s: %v\n", xid, err)
+				w.Header().Set("X-Source", sourceFiveSing)
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+		} else {
+			srcName = sourceXimalaya
+			src, err = XimalayaTrackSrc(xid)
+			if err != nil {
+				fmt.Printf("[Stream Live] 喜马拉雅取链失败 xid=%s: %v\n", xid, err)
+				w.Header().Set("X-Source", sourceXimalaya)
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
 		}
 		remoteURL = src
 	} else {
