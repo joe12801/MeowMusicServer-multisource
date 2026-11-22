@@ -21,6 +21,9 @@ concurrency:
 env:
   IMAGE_DOCKERHUB: joe1280/meowmusic
   IMAGE_GHCR: ghcr.io/joe12801/meowmusic
+  # 阿里云个人版 ACR（公开仓库，拉取不需要登录；从国内机器拉比 Docker Hub 快且没有限流）
+  IMAGE_ACR: crpi-wv2uaegt8g2y0g3c.cn-guangzhou.personal.cr.aliyuncs.com/joeloveqt-project/meowmusic
+  ACR_REGISTRY: crpi-wv2uaegt8g2y0g3c.cn-guangzhou.personal.cr.aliyuncs.com
   # NAS 上的部署目录（存放 .env 与 data/，compose 文件由每次 checkout 提供）
   DEPLOY_DIR: /vol1/meowmusic/deploy
 
@@ -56,6 +59,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 阿里云 ACR 只在国内用得上，secret 没配就跳过，不影响原有 Docker Hub / GHCR 流程
+      - name: Login Aliyun ACR
+        if: env.ACR_PASSWORD != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+        env:
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -63,6 +77,7 @@ jobs:
           images: |
             ${{ env.IMAGE_DOCKERHUB }}
             ${{ env.IMAGE_GHCR }}
+            ${{ env.IMAGE_ACR }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short,prefix=sha-
@@ -107,14 +122,17 @@ jobs:
         run: |
           set -e
           COMPOSE="docker compose -f $GITHUB_WORKSPACE/deploy/docker-compose.yml --project-directory $DEPLOY_DIR"
-          if $COMPOSE pull; then
+          # 优先阿里云 ACR：国内直连、公开免登录、无 Docker Hub 限流
+          if MEOW_IMAGE="$IMAGE_ACR:latest" $COMPOSE pull; then
+            echo "✅ 已从阿里云 ACR 拉取 $IMAGE_ACR:latest"
+            echo "MEOW_IMAGE=$IMAGE_ACR:latest" >> "$GITHUB_ENV"
+          elif $COMPOSE pull; then
             echo "✅ 已从 Docker Hub 拉取 $IMAGE_DOCKERHUB:latest"
           else
-            echo "⚠️ Docker Hub 拉取失败，回落到 GHCR"
+            echo "⚠️ ACR 与 Docker Hub 都失败，回落到 GHCR"
             echo "$GH_TOKEN_FOR_GHCR" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            MEOW_IMAGE="$IMAGE_GHCR:latest" $COMPOSE pull
             echo "MEOW_IMAGE=$IMAGE_GHCR:latest" >> "$GITHUB_ENV"
-            $COMPOSE pull
-            echo "✅ 已从 GHCR 拉取"
           fi
 
       - name: 重建容器
