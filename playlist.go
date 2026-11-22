@@ -736,6 +736,34 @@ func (pm *PlaylistManager) RemoveSongFromUserPlaylist(userID, playlistID, title,
 	return fmt.Errorf("playlist not found")
 }
 
+// ClearUserPlaylistSongs 清空一个歌单里的全部歌曲，歌单本身保留。
+// 返回被清掉的歌曲数量。「我喜欢」是受保护歌单，不允许整体清空，
+// 避免一键把所有收藏抹掉（要删单曲仍可逐首删）。
+func (pm *PlaylistManager) ClearUserPlaylistSongs(userID, playlistID string) (int, error) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	playlists, exists := pm.UserPlaylists[userID]
+	if !exists {
+		return 0, fmt.Errorf("no playlists found for user")
+	}
+
+	for i, playlist := range playlists {
+		if playlist.ID != playlistID {
+			continue
+		}
+		if playlist.Name == "我喜欢" && i == 0 {
+			return 0, fmt.Errorf("cannot clear favorite playlist")
+		}
+		removed := len(playlist.Songs)
+		playlist.Songs = []MusicItem{}
+		playlist.UpdatedAt = time.Now()
+		return removed, pm.saveUserPlaylists()
+	}
+
+	return 0, fmt.Errorf("playlist not found")
+}
+
 // DeleteUserPlaylist deletes a user's playlist
 func (pm *PlaylistManager) DeleteUserPlaylist(userID, playlistID string) error {
 	pm.mu.Lock()
@@ -913,6 +941,45 @@ func HandleRemoveSongFromUserPlaylist(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":  "success",
 		"message": "移除成功",
+	})
+}
+
+// HandleClearUserPlaylistSongs 一键清空歌单内的全部歌曲（歌单保留）
+func HandleClearUserPlaylistSongs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := r.Header.Get("X-User-ID")
+	if userID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	playlistID := r.URL.Query().Get("playlist_id")
+	if playlistID == "" {
+		http.Error(w, "Missing playlist_id parameter", http.StatusBadRequest)
+		return
+	}
+
+	removed, err := playlistManager.ClearUserPlaylistSongs(userID, playlistID)
+	if err != nil {
+		if err.Error() == "cannot clear favorite playlist" {
+			http.Error(w, "「我喜欢」不能一键清空，请逐首取消喜欢", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	fmt.Printf("[Info] User %s cleared playlist %s (%d songs)\n", userID, playlistID, removed)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "success",
+		"removed": removed,
+		"message": fmt.Sprintf("已清空 %d 首", removed),
 	})
 }
 

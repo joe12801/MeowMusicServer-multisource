@@ -957,7 +957,9 @@
             box-shadow: 0 15px 30px rgba(0,0,0,0.06);
         }
         .playlist-card.expanded .playlist-songs { display: block; }
-        .playlist-songs-toolbar { display: flex; margin: 12px 0 18px; }
+        .playlist-songs-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 12px 0 18px; }
+        .playlist-songs-toolbar .btn-icon { padding: 10px 20px; }
+        .playlist-songs-toolbar .toolbar-spacer { margin-left: auto; }
         .playlist-songs .song-list { gap: 12px; }
         .playlist-songs .song-item { padding: 14px 20px; border-radius: 20px; }
         .playlist-songs-empty { color: #999; text-align: center; padding: 25px 10px; font-size: 15px; }
@@ -3006,6 +3008,8 @@
                     const html = playlists.map((pl, idx) => {
                         const songs = pl.songs || [];
                         const expanded = expandedPlaylistIds.has(pl.id);
+                        // 「我喜欢」第一个歌单受保护，后端不允许整体清空，前端也不给按钮
+                        const isFavPlaylist = idx === 0 && pl.name === '我喜欢';
                         let songsBody;
                         if (songs.length > 0) {
                             const rows = songs.map((song, songIdx) => `
@@ -3023,6 +3027,7 @@
                             songsBody = `
                                 <div class="playlist-songs-toolbar">
                                     <button class="btn-icon btn-play" onclick="playPlaylistAll(${idx})">▶️ 播放全部 (${songs.length}首)</button>
+                                    ${isFavPlaylist ? '' : `<button class="btn-icon btn-remove toolbar-spacer" onclick="clearPlaylistSongs(${idx})" title="清空这个歌单里的全部歌曲（歌单本身保留）">🗑️ 一键清空 (${songs.length}首)</button>`}
                                 </div>
                                 <div class="song-list">${rows}</div>`;
                         } else {
@@ -3108,6 +3113,32 @@
                 }
             } catch (error) {
                 alert('移除失败：' + error.message);
+            }
+        }
+
+        // 一键清空歌单：歌单保留，只把里面的歌全删掉
+        async function clearPlaylistSongs(idx) {
+            const pl = playlists[idx];
+            if (!pl) return;
+            const count = pl.songs ? pl.songs.length : 0;
+            if (count === 0) return;
+            if (!confirm(`清空歌单「${pl.name}」的全部 ${count} 首歌？\n\n歌单本身会保留，但里面的歌曲会全部移除，这个操作不能撤销。`)) return;
+            try {
+                const params = new URLSearchParams({ playlist_id: pl.id });
+                const response = await fetch('/api/user/playlists/clear?' + params.toString(), {
+                    method: 'DELETE',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!response.ok) {
+                    alert('清空失败：' + (await response.text()));
+                    return;
+                }
+                const data = await response.json().catch(() => ({}));
+                expandedPlaylistIds.add(pl.id); // 清空后保持展开，方便确认真的空了
+                await loadPlaylists();
+                toast(`已清空 ${data.removed != null ? data.removed : count} 首歌`);
+            } catch (error) {
+                alert('清空失败：' + error.message);
             }
         }
 

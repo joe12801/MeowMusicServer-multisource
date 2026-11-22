@@ -92,6 +92,7 @@ func main() {
 	handle("/api/user/playlists/create", AuthMiddleware(HandleCreateUserPlaylist))
 	handle("/api/user/playlists/add-song", AuthMiddleware(HandleAddSongToUserPlaylist))
 	handle("/api/user/playlists/remove-song", AuthMiddleware(HandleRemoveSongFromUserPlaylist))
+	handle("/api/user/playlists/clear", AuthMiddleware(HandleClearUserPlaylistSongs)) // 一键清空歌单内全部歌曲（歌单保留）
 	handle("/api/user/playlists/delete", AuthMiddleware(HandleDeleteUserPlaylist))
 
 	// 歌单搬运：导出 m3u/txt/json、导入网易云歌单（导入要打网易云，按 IP 限流）
