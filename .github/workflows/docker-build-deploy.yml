@@ -1,4 +1,13 @@
-name: Build and Deploy Docker Image
+# 只负责「构建 + 推镜像」。部署到 NAS 已拆到 deploy-nas.yml。
+#
+# 为什么要拆（2026-11-23）：原先 deploy job 的 if 是
+#   (github.event_name == 'push' || inputs.deploy)
+# 即每次 push 都会排一个 Deploy to NAS。NAS runner 离线时这个 job 会无限期
+# 处于 queued，占住本 workflow 的 concurrency 组不放，导致之后每次 push 的 run
+# 都卡在 pending 且 jobs 为空（concurrency.cancel-in-progress 只能取消正在跑的，
+# 取消不了 queued 的 job）。拆成独立 workflow 后两边各用各的并发组，
+# NAS 在不在线都不影响出新镜像。
+name: Build and Push Docker Image
 
 on:
   push:
@@ -8,11 +17,6 @@ on:
       - 'LICENSE'
       - 'NOTICE'
   workflow_dispatch:
-    inputs:
-      deploy:
-        description: '构建完成后是否部署到 NAS'
-        type: boolean
-        default: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,8 +28,6 @@ env:
   # 阿里云个人版 ACR（公开仓库，拉取不需要登录；从国内机器拉比 Docker Hub 快且没有限流）
   IMAGE_ACR: crpi-wv2uaegt8g2y0g3c.cn-guangzhou.personal.cr.aliyuncs.com/joeloveqt-project/meowmusic
   ACR_REGISTRY: crpi-wv2uaegt8g2y0g3c.cn-guangzhou.personal.cr.aliyuncs.com
-  # NAS 上的部署目录（存放 .env 与 data/，compose 文件由每次 checkout 提供）
-  DEPLOY_DIR: /vol1/meowmusic/deploy
 
 jobs:
   build:
@@ -97,88 +99,3 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
-
-  deploy:
-    name: Deploy to NAS
-    needs: build
-    if: |
-      always() && needs.build.result == 'success' &&
-      (github.event_name == 'push' || inputs.deploy)
-    runs-on: [self-hosted, nas]
-    env:
-      # 该 runner 的 joe1280 用户没有 home 目录，docker login 会 mkdir /home/joe1280 失败
-      DOCKER_CONFIG: ${{ github.workspace }}/.docker
-    steps:
-      - name: Checkout (取 deploy/docker-compose.yml)
-        uses: actions/checkout@v4
-
-      - name: 记录当前镜像
-        id: before
-        run: |
-          docker inspect -f '{{.Image}}' meow-music 2>/dev/null || echo "none"
-          docker image inspect joe1280/meowmusic:latest \
-            --format '当前 running 镜像: {{.Id}} ({{.Created}})' 2>/dev/null || true
-
-      - name: Pull 最新镜像
-        env:
-          GH_TOKEN_FOR_GHCR: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p "$DOCKER_CONFIG"
-          COMPOSE="docker compose -f $GITHUB_WORKSPACE/deploy/docker-compose.yml --project-directory $DEPLOY_DIR"
-
-          # 依次尝试 ACR → Docker Hub → GHCR，每个源重试 3 次
-          # 只拉 meow-music：lrcapi / gomusic 是 Docker Hub 上的第三方镜像，
-          # 在拉不动 Docker Hub 的机器上会把整个 pull 拖死；它们本地已有，不需要每次更新
-          try_pull() {
-            for i in 1 2 3; do
-              echo "--- 尝试 $1（第 $i 次）---"
-              if MEOW_IMAGE="$1" $COMPOSE pull meow-music; then
-                echo "MEOW_IMAGE=$1" >> "$GITHUB_ENV"
-                echo "✅ 拉取成功：$1"
-                return 0
-              fi
-              sleep 5
-            done
-            return 1
-          }
-
-          if try_pull "$IMAGE_ACR:latest"; then exit 0; fi
-          echo "⚠️ ACR 三次均失败，回落 Docker Hub"
-          if try_pull "$IMAGE_DOCKERHUB:latest"; then exit 0; fi
-          echo "⚠️ Docker Hub 也失败，回落 GHCR"
-          echo "$GH_TOKEN_FOR_GHCR" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          try_pull "$IMAGE_GHCR:latest"
-
-      - name: 重建容器
-        run: |
-          docker compose \
-            -f "$GITHUB_WORKSPACE/deploy/docker-compose.yml" \
-            --project-directory "$DEPLOY_DIR" \
-            up -d --remove-orphans
-
-      - name: 健康检查
-        run: |
-          set -e
-          for i in $(seq 1 20); do
-            if curl -fsS -m 3 http://127.0.0.1:2233/ > /dev/null; then
-              echo "✅ 服务已就绪（第 ${i} 次探测）"
-              curl -fsS -m 5 "http://127.0.0.1:2233/api/search?query=%E5%91%A8%E6%9D%B0%E4%BC%A6&limit=1" > /dev/null \
-                && echo "✅ 搜索接口正常" || echo "⚠️ 搜索接口无响应（不影响启动）"
-              docker image prune -f --filter "until=24h" > /dev/null 2>&1 || true
-              exit 0
-            fi
-            sleep 3
-          done
-          echo "❌ 20 次探测仍不可用，输出容器日志："
-          docker compose \
-            -f "$GITHUB_WORKSPACE/deploy/docker-compose.yml" \
-            --project-directory "$DEPLOY_DIR" \
-            logs --tail 80
-          exit 1
-
-      - name: 部署后状态
-        if: always()
-        run: |
-          docker ps --filter name=meow-music --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
-          echo "--- 磁盘 ---"
-          df -h /vol1 | tail -1

@@ -914,15 +914,33 @@ PLAYLIST_SONGS_MAX=150
 MUSIC_MP3API_KEY=你的key
 ```
 
-**自动部署（GitHub Actions）**
+**镜像构建与部署（GitHub Actions）**
 
-`.github/workflows/docker-build-deploy.yml` 分两个 job：
+拆成两个独立 workflow，互不影响：
 
-1. `build`：在 GitHub 托管 runner 上用 buildx + QEMU 构建 `amd64/arm64` 镜像，推送到 Docker Hub 与 GHCR
-2. `deploy`：在 NAS 上的自托管 runner（标签 `self-hosted, nas`）执行
-   `docker compose pull && up -d`，随后探测 `http://127.0.0.1:2233/` 做健康检查，失败会打印容器日志
+1. `.github/workflows/docker-build-deploy.yml`（`Build and Push Docker Image`）：`main` 一 push 就
+   在 GitHub 托管 runner 上用 buildx + QEMU 构建 `amd64/arm64` 镜像，推送到 Docker Hub / GHCR / 阿里云 ACR。
+   只出镜像，不碰任何部署目标。
+2. `.github/workflows/deploy-nas.yml`（`Deploy to NAS`）：**只能手动触发**
+   （Actions → Deploy to NAS → Run workflow，可填 `latest` 或 `sha-xxxxxxx`），
+   在 NAS 上的自托管 runner（标签 `self-hosted, nas`）执行 `docker compose pull && up -d`，
+   随后探测 `http://127.0.0.1:2233/` 做健康检查，失败会打印容器日志。
 
-需要在仓库 Secrets 里配好 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`。
+> 为什么不放在一个 workflow 里：部署目标是一台可能关机的机器。早先 `deploy` job 的触发条件是
+> `push || inputs.deploy`，NAS 离线时它会无限期 queued 并占住整个 workflow 的并发组，
+> 导致之后每次 push 的 run 都卡在 pending（`cancel-in-progress` 只能取消正在跑的，
+> 取消不了已排队但没分配到 runner 的 job）。拆开后 NAS 在不在线都不影响出镜像。
+
+手动部署的三种方式（按省事程度排）：
+
+```bash
+# 1) 在 GitHub 上点：Actions → Deploy to NAS → Run workflow（image_tag 留 latest）
+# 2) 直接在 NAS 上：
+cd /vol1/meowmusic/deploy && docker compose pull meow-music && docker compose up -d
+# 3) 只想临时换某个版本的镜像：改 deploy/.env 里的 MEOW_IMAGE，再 up -d
+```
+
+需要在仓库 Secrets 里配好 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`（只构建用）。
 自托管 runner 装在 `/vol1/github-runner`，以 `actions.runner.joe12801-MeowMusicServer-multisource.nas-220` 这个 systemd 服务常驻：
 
 ```bash

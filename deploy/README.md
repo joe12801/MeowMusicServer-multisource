@@ -177,9 +177,14 @@ docker compose pull && docker compose up -d
 
 ## 7. 关于自动部署
 
-仓库的 `.github/workflows/docker-build-deploy.yml` 会自动构建多架构镜像并推送到 Docker Hub / GHCR。
-其中的 `deploy` job 绑定的是**维护者 NAS 上的自托管 runner**（标签 `self-hosted, nas`），
+仓库的 `.github/workflows/docker-build-deploy.yml` 负责构建多架构镜像并推送到 Docker Hub / GHCR / 阿里云 ACR，
+`main` 一 push 就跑，**但不管部署** —— 部署是独立的手动 workflow `.github/workflows/deploy-nas.yml`。
+
+其中 `deploy-nas.yml` 绑定的是**维护者 NAS 上的自托管 runner**（标签 `self-hosted, nas`），
 在别人的服务器上不会生效，也不需要配 —— 手动 `docker compose pull && up -d` 就行。
+这样设计是因为部署目标可能关机：早先把部署塞在构建 workflow 里，NAS 离线时 queued 的 job
+会占住并发组，把后续所有构建都卡成 pending。
 
 想给自己的机器也接入自动部署，做法是：在该机器装一个 GitHub Actions runner 并打上 `nas` 标签，
-或者把 `deploy` job 的 `runs-on` 改成自己的标签；同时确保仓库 Secrets 里配了 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`。
+然后手动触发 `Deploy to NAS`；同时确保仓库 Secrets 里配了 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`
+（仅构建需要）。

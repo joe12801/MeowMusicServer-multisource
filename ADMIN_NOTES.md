@@ -803,3 +803,49 @@ qishuiPickURL 池A 失败（宿主机无 gomusic）→ 分享页池第 2 次命�
 
 改之前同样的池A 失败场景要走「ffmpeg 转码失败 → 重取链 → 第二次转码」，实测 22.8s。
 现在 4/4 都是第一次转码就成功。
+
+## 二十、CI 拆分：构建与部署分离（2026-11-23 凌晨）
+
+### 问题
+
+`deploy` job 的触发条件原本是：
+
+```yaml
+if: always() && needs.build.result == 'success' &&
+    (github.event_name == 'push' || inputs.deploy)
+```
+
+也就是**每次 push 都排一个 Deploy to NAS**。它跑在 NAS 的自托管 runner 上，
+NAS 关机 / runner 没起来时，这个 job 会**无限期 queued**，并且占住本 workflow 的
+并发组 `Build and Deploy Docker Image-refs/heads/main` 不放。
+
+后果：之后每次 push 的 run 都卡在 `pending` 且 `jobs` 为空 —— 镜像也不出了。
+`concurrency.cancel-in-progress: true` **救不了**：它只取消「正在跑」的 run，
+对「已排队但没分配到 runner 的 job」无效，只能 `POST /actions/runs/<id>/force-cancel`。
+这个坑在 2026-11-23 凌晨连续踩了三次（45065295678、45067412819、45070791491）。
+
+### 改法
+
+拆成两个 workflow，各用各的并发组：
+
+| 文件 | name | 触发 | 干什么 |
+|---|---|---|---|
+| `.github/workflows/docker-build-deploy.yml` | `Build and Push Docker Image` | push main / 手动 | 只构建 + 推三仓库 |
+| `.github/workflows/deploy-nas.yml` | `Deploy to NAS` | **仅手动** | 拉镜像 + 重建容器 + 健康检查 |
+
+细节：
+
+- `deploy-nas.yml` 的并发组是 `deploy-nas`、`cancel-in-progress: false`，
+  连续手动触发时排队而不是互相取消（避免容器重建到一半被掐）。
+- 新增输入 `image_tag`（默认 `latest`），可以精确部署 `sha-xxxxxxx`。
+- 拉取顺序仍是 ACR → Docker Hub → GHCR，每个源重试 3 次；只拉 `meow-music`。
+- workflow 的 `name` 也改了，所以新 run 的并发组名不同 —— 历史上那些卡住的旧 run
+  不会再拖累新构建（这一点是意外收益）。
+- 想恢复「push 后自动部署」：把 `deploy-nas.yml` 顶部注释掉的 `workflow_run` 块加回来即可。
+  注意 workflow_run 触发的 run 里 `GITHUB_SHA` 是默认分支最新提交、不是触发它的那个 commit，
+  checkout 必须显式用 `github.event.workflow_run.head_sha`，否则 compose 文件与镜像版本对不上。
+
+### 顺带的说明
+
+`test-and-build.yml` 是上游 ESP32 项目的构建流程（`runs-on: self-hosted`，无标签），
+只在手动触发的发版场景用，和本项目的镜像链路无关，未改动。
