@@ -206,6 +206,7 @@ var defaultProxyHosts = []string{
 	"xfabe.com", "gdstudio.xyz", "994938.xyz",
 	"yaohud.cn", "yuafeng.cn", "migu.cn",
 	"googlevideo.com", "ytimg.com", "youtube.com",
+	"hdslb.com", "bilivideo.com", "bilivideo.cn", "akamaized.net",
 }
 
 func proxyHostAllowed(host string) bool {

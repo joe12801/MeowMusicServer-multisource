@@ -39,9 +39,14 @@ func HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 播放 URL 需要给浏览器用，补成绝对地址
+	// 播放 URL 需要给浏览器用，补成绝对地址。
+	// 线上是 nginx 终结 TLS 再反代到 127.0.0.1:2233，应用本身看到的是明文 HTTP，
+	// 所以要认 X-Forwarded-Proto——否则每条播放地址都是 http://，
+	// 浏览器每次取流都先吃一个 301 跳转。
 	scheme := "http"
 	if r.TLS != nil {
+		scheme = "https"
+	} else if strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
 		scheme = "https"
 	}
 	base := scheme + "://" + r.Host
@@ -119,6 +124,16 @@ func livePlayURLX(title, artist, trackID string) string {
 	u := livePlayURL(title, artist)
 	if trackID != "" {
 		u += "&xid=" + url.QueryEscape(trackID)
+	}
+	return u
+}
+
+// livePlayURLB 带 B 站 BV 号的播放地址。同 livePlayURLX，
+// 只是 B 站要的是 bv（cid 在播放时用 view 接口换），不能靠歌名解析。
+func livePlayURLB(title, artist, bvid string) string {
+	u := livePlayURL(title, artist)
+	if bvid != "" {
+		u += "&bv=" + url.QueryEscape(bvid)
 	}
 	return u
 }
@@ -351,6 +366,41 @@ func searchOnlySource(only, query, artist string, limit int) []MusicItem {
 		// 只给 id 取不到，给歌名更认不出来。时长搜索接口不给，留 0 由缓存兜底。
 		for _, s := range FiveSingSearchLimit(song, singer, limit) {
 			addID(sourceFiveSing, s.Name, s.Artist, 0, "", fiveSingTrackXID(s.ID, s.Type))
+		}
+	case "bilibili", "bili":
+		// B 站同理带 bv：搜到的是 UP 主的视频，靠歌名二次解析会拿到别的版本。
+		// 去重按 BV 号——同一首歌的不同现场/修复版都该保留。
+		for _, s := range BilibiliSearchLimit(song, singer, limit) {
+			title := strings.TrimSpace(s.Title)
+			if title == "" || s.BVID == "" || len(out) >= limit {
+				continue
+			}
+			key := "bv:" + s.BVID
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			// 歌手上优先显示「搜索时指定的歌手」：B 站搜索结果里 author 是 UP 主
+			// （VV音乐局 / 如歌如梦…），播放器上直接显示会很怪；标题里出现过歌手名
+			// 就说明这条确实是该歌手的作品，用歌手名更符合听歌时的预期。
+			artist := strings.TrimSpace(s.Artist)
+			if singer != "" && strings.Contains(strings.ToLower(title), strings.ToLower(singer)) {
+				artist = singer
+			}
+			duration := s.Duration
+			if duration <= 0 {
+				duration = cachedDuration(title, artist)
+			}
+			playURL := livePlayURLB(title, artist, s.BVID)
+			out = append(out, MusicItem{
+				Title:        title,
+				Artist:       artist,
+				Duration:     duration,
+				Source:       sourceBilibili,
+				CoverURL:     s.Cover,
+				AudioURL:     playURL,
+				AudioFullURL: playURL,
+			})
 		}
 	}
 	return out

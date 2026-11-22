@@ -399,8 +399,11 @@ func getRemoteMusicURLWithSource(song, singer string) (string, string) {
 // 境外实测约 1/3 概率命中整段不通的 v11-luna（ffmpeg 直接 exit 146）。
 // 其它源的直链是固定的对象存储地址，换链没有意义；而重跑整条多源链代价太高
 // （每源都有网络往返，冷启动还可能有 13s+ 的源），不能拿它当重试手段。
+// retryableTranscodeSource 判断某个源的直链是否「换一次就大概率能通」。
+// 汽水：直链按请求随机分配 CDN 节点，约 1/3 落到不通的节点。
+// B 站：DASH 直链带有效期且有多备选 CDN，失败时换备用地址/重签一次值得。
 func retryableTranscodeSource(source string) bool {
-	return source == sourceQishui
+	return source == sourceQishui || source == sourceBilibili
 }
 
 // refetchRemoteURL 转码失败后只针对该源重新取一次直链，不重跑整条多源链路。

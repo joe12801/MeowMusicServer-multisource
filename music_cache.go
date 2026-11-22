@@ -118,6 +118,13 @@ func sanitizeCacheSegment(s string) string {
 // ensureMusicCache 保证 cacheFile 存在；不存在则完整转码 remoteURL 到该文件。
 // 返回时要么缓存文件已就绪，要么 error（不会留下半文件）。
 func ensureMusicCache(remoteURL, cacheFile string) error {
+	return ensureMusicCacheWithHeaders(remoteURL, cacheFile, nil)
+}
+
+// ensureMusicCacheWithHeaders 同 ensureMusicCache，但允许给上游请求加 HTTP 头。
+// 目前只有 B 站用得上：它的音频 CDN 校验 User-Agent，ffmpeg 自带的
+// "Lavf/x.y" 会被直接 403，必须换成浏览器 UA 才能拉到流。
+func ensureMusicCacheWithHeaders(remoteURL, cacheFile string, extraHeaders map[string]string) error {
 	if _, err := os.Stat(cacheFile); err == nil {
 		return nil
 	}
@@ -159,12 +166,33 @@ func ensureMusicCache(remoteURL, cacheFile string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ffmpeg",
-		"-rw_timeout", "30000000", // 30s 无数据则判超时（微秒），防上游卡死
+	// ffmpeg 的输入选项：UA 用 -user_agent 单独传（写进 -headers 会和 ffmpeg
+	// 自己的默认 UA 重复成两条），其余头走 -headers，多行用 \r\n 分隔。
+	ffArgs := []string{"-rw_timeout", "30000000"} // 30s 无数据则判超时（微秒），防上游卡死
+	if len(extraHeaders) > 0 {
+		var hdr strings.Builder
+		for _, k := range []string{"Referer", "Cookie", "Origin", "Accept"} {
+			if v, ok := extraHeaders[k]; ok && strings.TrimSpace(v) != "" {
+				hdr.WriteString(k)
+				hdr.WriteString(": ")
+				hdr.WriteString(strings.TrimSpace(v))
+				hdr.WriteString("\r\n")
+			}
+		}
+		if ua := strings.TrimSpace(extraHeaders["User-Agent"]); ua != "" {
+			ffArgs = append(ffArgs, "-user_agent", ua)
+		}
+		if hdr.Len() > 0 {
+			ffArgs = append(ffArgs, "-headers", hdr.String())
+		}
+	}
+	ffArgs = append(ffArgs,
 		"-i", remoteURL,
 		"-threads", "0",
 		"-ac", "1", "-ar", "24000", "-b:a", "32k", "-q:a", "9",
 		"-f", "mp3", "-map_metadata", "-1", "-y", tmpFile)
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", ffArgs...)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

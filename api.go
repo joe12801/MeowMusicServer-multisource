@@ -200,8 +200,11 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 	// 这类内容（有声书/播客/原创翻唱）和音乐源完全不重叠，只能按 id 直取，
 	// 不能靠歌名二次解析，否则会放成同名的歌。
 	xid := strings.TrimSpace(queryParams.Get("xid"))
+	// bv：B 站的 BV 号。同理——UP 主上传的现场/二创和音乐源不重叠，
+	// 按 BV 号取流（cid 在播放时再用 view 接口换），不跑多源链路。
+	bv := strings.TrimSpace(queryParams.Get("bv"))
 
-	fmt.Printf("[Stream Live] Request: song=%s, singer=%s, xid=%s\n", song, singer, xid)
+	fmt.Printf("[Stream Live] Request: song=%s, singer=%s, xid=%s, bv=%s\n", song, singer, xid, bv)
 
 	if song == "" {
 		http.Error(w, "Missing song parameter", http.StatusBadRequest)
@@ -248,7 +251,49 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[Stream Live] Cache miss, fetching from API...\n")
 
 	var remoteURL, srcName string
-	if xid != "" {
+	// refetch：转码失败后重新取一次直链（限流/节点问题才需要）。
+	// 用闭包是为了让 B 站能同时用上「备用 CDN 地址」和「重新签一次 URL」两条路，
+	// 也让多源链路保持原来的 refetchRemoteURL 逻辑不变。
+	var refetch func() string
+	switch {
+	case bv != "":
+		// B 站：按 BV 号取纯音频直链，不跑多源链路。
+		// 失效视频会自动换一条同名的能播版本（返回实际用上的 BV）。
+		srcName = sourceBilibili
+		audio, usedBV, err := BilibiliResolve(bv, song, singer)
+		if err != nil {
+			fmt.Printf("[Stream Live] B站取链失败 bv=%s: %v\n", bv, err)
+			w.Header().Set("X-Source", sourceBilibili)
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		bv = usedBV
+		remoteURL = audio.URL
+		if audio.Title != "" {
+			quality := ""
+			if audio.Lossless {
+				quality = " 无损"
+			}
+			fmt.Printf("[Stream Live] B站命中：%s - %s（%dkbps%s）\n",
+				audio.Title, audio.Artist, audio.Bandwidth/1000, quality)
+		}
+		backups := audio.Backups
+		refetch = func() string {
+			for len(backups) > 0 {
+				next := backups[0]
+				backups = backups[1:]
+				if next != "" {
+					return next
+				}
+			}
+			// 备用地址也全灭了，就重新签一次（B 站直链带有效期，重签能换节点）
+			if again, err := BilibiliAudio(bv); err == nil {
+				backups = again.Backups
+				return again.URL
+			}
+			return ""
+		}
+	case xid != "":
 		// 按 xid 直取，不跑多源链路。xid 前缀区分来源：
 		//   fs:...  → 5sing（songId + typeEname）
 		//   纯数字  → 喜马拉雅 trackId
@@ -276,17 +321,26 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		remoteURL = src
-	} else {
+		refetch = func() string { return "" }
+	default:
 		remoteURL, srcName = getRemoteMusicURLWithSource(song, singer)
+		refetch = func() string { return refetchRemoteURL(song, singer, srcName) }
 	}
 	if remoteURL == "" {
 		http.Error(w, "Failed to get remote music URL", http.StatusNotFound)
 		return
 	}
 
-	// 转码失败重试：只对「直链按请求随机分配 CDN 节点」的源有意义（目前只有汽水）。
+	// B 站的音频 CDN 认浏览器 UA，转码时得把头一起传下去
+	var streamHeaders map[string]string
+	if srcName == sourceBilibili {
+		streamHeaders = biliStreamHeaders()
+	}
+
+	// 转码失败重试：只对「直链会换节点」的源有意义（汽水、B站）。
 	// 境外实测汽水约 1/3 概率落到不通的节点（v11-luna 整段超时 → ffmpeg exit 146），
 	// 重取一次直链大概率换到 v3/v5/v26 这类可达节点，重试两次后成功率约 95%。
+	// B 站直链带有效期且多备选 CDN，失败时换备用地址/重签一次同样有用。
 	// 其它源直链固定，失败就是真失败，直接返回 500，不做无意义的重试。
 	const maxTranscodeAttempts = 3
 	var transcodeErr error
@@ -294,7 +348,7 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("[Stream Live] Transcoding from: %s（第 %d 次，源=%q）\n",
 			mp3ApiMaskKey(remoteURL), attempt, srcName)
 
-		transcodeErr = ensureMusicCache(remoteURL, cachedFile)
+		transcodeErr = ensureMusicCacheWithHeaders(remoteURL, cachedFile, streamHeaders)
 		if transcodeErr == nil {
 			break
 		}
@@ -303,7 +357,7 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		fmt.Printf("[Stream Live] 转码失败（%v），重新取链换节点\n", transcodeErr)
-		if next := refetchRemoteURL(song, singer, srcName); next != "" {
+		if next := refetch(); next != "" {
 			remoteURL = next
 		} else {
 			// 新链没取到就沿用旧链再试一次，别提前放弃

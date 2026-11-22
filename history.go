@@ -237,7 +237,7 @@ func HandleHistoryReport(w http.ResponseWriter, r *http.Request) {
 func normalizeSourceLabel(src string) string {
 	src = strings.ToLower(strings.TrimSpace(src))
 	switch src {
-	case "kuwo", "netease", "qq", "kugou", "ext", "qishui", "ximalaya", "fivesing":
+	case "kuwo", "netease", "qq", "kugou", "ext", "qishui", "ximalaya", "fivesing", "bilibili":
 		return src
 	}
 	return ""
