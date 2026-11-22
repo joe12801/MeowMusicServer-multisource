@@ -503,3 +503,27 @@ ffprobe 实测 duration=60；CDN 境外可访问，能正常转码）。
 
 顺手记一个操作纪律：`pkill -f "docker push"` 会匹配到自己的 `sh -c` 命令行，把自己也杀掉
 （日志里留下 `LATEST_EXIT=143`），要么用 `pkill -f '^docker push'`，要么按 PID 杀。
+
+## 十五、CI 直推阿里云 ACR + 部署链路打通（2026-11-22 夜）
+
+结论先说：**以后不要再从东京硬推镜像了**，走 CI 更快也更稳。
+
+- `main` 一 push，`.github/workflows/docker-build-deploy.yml` 用 QEMU 构建
+  `linux/amd64,linux/arm64` 双架构，一次推 Docker Hub + GHCR + 阿里云 ACR
+- ACR 上的 `latest` 因此是多架构 OCI index，x86 / ARM 机器都能直接拉
+- 部署任务 `Deploy to NAS` 优先从 ACR 拉（公开仓库，免登录），失败才回落 Docker Hub、GHCR
+
+修掉的三个部署坑：
+
+| 现象 | 真因 | 修法 |
+|---|---|---|
+| `Pull 最新镜像` 恒失败且耗时极长 | `compose pull` 连 `lrcapi`/`gomusic` 一起拉，这两个在 Docker Hub，目标机连不上 | 改成 `pull meow-music` |
+| `Error saving credentials: mkdir /home/joe1280: permission denied` | runner 的 `joe1280` 没有 home 目录，docker login 写不了 `~/.docker` | job 级 `DOCKER_CONFIG: ${{ github.workspace }}/.docker` |
+| 单一源失败即整体失败 | 无回落 | ACR → Docker Hub → GHCR 三级，每级重试 3 次 |
+
+还有一点容易搞混：**部署目标 runner `nas-220` 不是东京那台 VPS**。VPS 内网是
+`10.0.0.147`，runner 在 `192.168.2.220` 的另一个局域网里；那台机器
+`registry-1.docker.io` 直接 `connection reset`，所以 ACR 是它唯一能用的源。
+
+实测一次全绿：build（双架构）→ 三处推送 → NAS 从 ACR 拉取（第 1 次就成功）→
+容器 `Up 7 seconds (healthy)`。
