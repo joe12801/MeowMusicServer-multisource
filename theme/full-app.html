@@ -960,6 +960,12 @@
         .playlist-songs-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 12px 0 18px; }
         .playlist-songs-toolbar .btn-icon { padding: 10px 20px; }
         .playlist-songs-toolbar .toolbar-spacer { margin-left: auto; }
+        /* 手机端两个按钮挤一行，别让「一键清空」单独折到下一行 */
+        @media screen and (max-width: 768px) {
+            .playlist-songs-toolbar { gap: 8px; }
+            .playlist-songs-toolbar .btn-icon { padding: 8px 12px; font-size: 13px; }
+            .playlist-songs-toolbar .toolbar-spacer { margin-left: 0; }
+        }
         .playlist-songs .song-list { gap: 12px; }
         .playlist-songs .song-item { padding: 14px 20px; border-radius: 20px; }
         .playlist-songs-empty { color: #999; text-align: center; padding: 25px 10px; font-size: 15px; }
