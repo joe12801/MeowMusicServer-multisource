@@ -33,6 +33,8 @@ services:
       PORT: "2233"
       TZ: Asia/Shanghai
       PLAYLIST_SONGS_MAX: "${PLAYLIST_SONGS_MAX:-150}"
+      # 汽水搜索走 qishui-proxy（免签名公开搜索），取链/榜单仍透传给 gomusic
+      QISHUI_BASE: "${QISHUI_BASE:-http://qishui-proxy:8080}"
     env_file:
       - path: .env
         required: false
@@ -76,6 +78,30 @@ services:
       TZ: Asia/Shanghai
     volumes:
       - ${MEOW_DATA_DIR:-./data}/qishui/cookies.json:/home/appuser/cookies.json
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  # 汽水搜索代理：把 /api/v1/music/search 改走免签名的公开搜索接口
+  # （原生接口要求 x-helios / x-medusa 签名，未签名返回 200 + 空 body，搜不到歌）
+  # 其余路径原样透传给 gomusic；只跑在容器网络内，不映射宿主机端口
+  qishui-proxy:
+    image: ${QISHUI_PROXY_IMAGE:-node:20-alpine}
+    container_name: qishui-proxy
+    # 用 profile 隔离：不显式 --profile qishui 就不会启动，也不会去拉 node 镜像。
+    # 这样 CI 在没有外网的机器上 `compose up -d` 依旧安全，需要汽水的机器自己开。
+    profiles: ["qishui"]
+    restart: unless-stopped
+    command: ["node", "/app/proxy.cjs"]
+    environment:
+      TZ: Asia/Shanghai
+      QISHUI_UPSTREAM: "http://gomusic:8080"
+    volumes:
+      - ./qishui-proxy/proxy.cjs:/app/proxy.cjs:ro
+    depends_on:
+      - gomusic
     logging:
       driver: json-file
       options:

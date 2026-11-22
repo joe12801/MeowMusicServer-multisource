@@ -2186,7 +2186,9 @@
 
         function highlightLimitChip() {
             const cur = getSearchLimit();
-            document.querySelectorAll('.limit-chip').forEach(chip => {
+            // 必须限定带 data-limit 的按钮：音源 chip 复用了 .limit-chip 样式却没有
+            // data-limit，全局选择器会把它们的 active 一并清掉，点了音源看不出选中。
+            document.querySelectorAll('.limit-chip[data-limit]').forEach(chip => {
                 chip.classList.toggle('active', parseInt(chip.dataset.limit, 10) === cur);
             });
         }

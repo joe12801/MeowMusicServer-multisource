@@ -335,26 +335,39 @@ func qishuiSearchLimit(song, singer string, limit int) []qishuiSong {
 	// 和搜索的其他源保持一致：能匹配上的优先，其余按上游顺序补充
 	picked := make([]qishuiSong, 0, limit)
 	used := make([]bool, len(list))
+	fatal := make([]bool, len(list))
+	scores := make([]int, len(list))
+	for i := range list {
+		scores[i], fatal[i] = qishuiScoreTrack(&list[i], song, singer)
+	}
+	// 第一轮：歌名/歌手对得上的，按分数从高到低挑
 	for len(picked) < limit {
-		var best *qishuiSong
 		bestIdx, bestScore := -1, 40
 		for i := range list {
-			if used[i] {
+			if used[i] || fatal[i] {
 				continue
 			}
-			score, fatal := qishuiScoreTrack(&list[i], song, singer)
-			if fatal {
-				continue
-			}
-			if score > bestScore {
-				best, bestIdx, bestScore = &list[i], i, score
+			if scores[i] > bestScore {
+				bestIdx, bestScore = i, scores[i]
 			}
 		}
-		if best == nil {
+		if bestIdx < 0 {
 			break
 		}
 		used[bestIdx] = true
-		picked = append(picked, *best)
+		picked = append(picked, list[bestIdx])
+	}
+	// 第二轮：不够 limit 就按上游顺序补齐（只排掉明确无关的）。
+	// 没有这一步，「按音源筛选」时上游 20 条只剩 4 条，看起来像搜不到歌。
+	for i := range list {
+		if len(picked) >= limit {
+			break
+		}
+		if used[i] || fatal[i] {
+			continue
+		}
+		used[i] = true
+		picked = append(picked, list[i])
 	}
 	return picked
 }

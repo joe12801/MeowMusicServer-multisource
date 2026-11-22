@@ -339,22 +339,24 @@ func requestAndCacheMusic(song, singer string) MusicItem {
 				item.Title, song)
 		}
 	}
-	// 汽水音乐（抖音曲库）：独家曲、下架曲常有。未登录只给 60 秒试听，
-	// 所以排在国内主源和 GDStudio 之后，且校验歌名，避免顶掉能放完整版的源。
-	if srcEnabled("qishui") {
-		if item := trySource("qishui", func() MusicItem { return QishuiSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
-			if songTitleMatches(item.Title, song) {
-				return item
-			}
-			fmt.Printf("[Source] 汽水返回的是 %q（与 %q 不符），继续往后找\n", item.Title, song)
-		}
-	}
 	// mp3.994938.xyz（yt-dlp 兜底）：YouTube 曲库关键词直搜取第一条，
 	// 国内/国外服务器都能直连（境外实测比境内还快）。首次冷启动 13s+，
 	// 上游缓存后秒回，故只放后段兜底。KEY 走 MUSIC_MP3API_KEY，未配置自动跳过。
 	if srcEnabled("mp3api") && !mp3ApiTried {
 		if item := trySource("mp3api", func() MusicItem { return MP3ApiSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
 			return item
+		}
+	}
+	// 汽水音乐（抖音曲库）：独家曲、下架曲常有，但**未登录只给约 30 秒试听**
+	// （实测 303s 的歌取链只有 471KB）。所以必须排在所有能给完整版的源之后，
+	// 尤其是 mp3api —— 否则它会把能放完整版的结果顶掉，用户听一半就断。
+	// 等在国内服务器上登录成功（cookies.json 里 soda 非空）后，可以再往前提。
+	if srcEnabled("qishui") {
+		if item := trySource("qishui", func() MusicItem { return QishuiSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
+			if songTitleMatches(item.Title, song) {
+				return item
+			}
+			fmt.Printf("[Source] 汽水返回的是 %q（与 %q 不符），继续往后找\n", item.Title, song)
 		}
 	}
 	// 最后兜底：yuafeng 免费接口

@@ -51,7 +51,10 @@ function artistFrom(item) {
 async function handleSearch(req, res, parsed) {
   const keyword = firstText(parsed.searchParams.get('q'), parsed.searchParams.get('keyword'));
   let limit = parseInt(parsed.searchParams.get('limit') || '10', 10);
-  if (!Number.isFinite(limit) || limit <= 0 || limit > 30) limit = 10;
+  if (!Number.isFinite(limit) || limit <= 0) limit = 10;
+  // 超上限要「截断」而不是「重置成 10」：上游调用方常传 limit*2（如 40），
+  // 早先直接重置会让 40 变成 10，搜索结果莫名少一大半。
+  if (limit > 30) limit = 30;
 
   if (!keyword) {
     return sendJSON(res, 200, {
