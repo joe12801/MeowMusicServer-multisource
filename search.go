@@ -112,6 +112,17 @@ func livePlayURL(title, artist string) string {
 	return "/stream_live?song=" + url.QueryEscape(title) + "&singer=" + url.QueryEscape(artist)
 }
 
+// livePlayURLX 带上游 trackId 的播放地址。
+// 只有喜马拉雅需要：它的内容（有声书/播客）和音乐源完全不重叠，
+// 靠「歌名+歌手」二次解析必然张冠李戴，所以把 trackId 一路带到 /stream_live。
+func livePlayURLX(title, artist, trackID string) string {
+	u := livePlayURL(title, artist)
+	if trackID != "" {
+		u += "&xid=" + url.QueryEscape(trackID)
+	}
+	return u
+}
+
 // normalizeDuration 把毫秒时长归一成秒（各音源单位不一致）。
 func normalizeDuration(d int) int {
 	if d > 10000 { // 明显是毫秒
@@ -302,6 +313,34 @@ func searchOnlySource(only, query, artist string, limit int) []MusicItem {
 			for _, it := range mp3ApiCandidates(strings.TrimSpace(song+" "+singer), singer, limit) {
 				add("ext", it.Title, it.Artist, it.Duration)
 			}
+		}
+	case "ximalaya":
+		// 喜马拉雅带 trackId：播放时按 id 直取，不走「歌名二次解析」，
+		// 否则搜到的播客会被解析成同名的歌。
+		for _, s := range XimalayaSearchLimit(song, singer, limit) {
+			title := strings.TrimSpace(s.Name)
+			if title == "" || len(out) >= limit {
+				continue
+			}
+			duration := s.Duration
+			if duration <= 0 {
+				duration = cachedDuration(title, s.Artist)
+			}
+			key := toLower(title) + "\x00" + toLower(strings.TrimSpace(s.Artist))
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			playURL := livePlayURLX(title, s.Artist, s.ID)
+			out = append(out, MusicItem{
+				Title:        title,
+				Artist:       strings.TrimSpace(s.Artist),
+				Duration:     duration,
+				Source:       sourceXimalaya,
+				CoverURL:     s.Cover,
+				AudioURL:     playURL,
+				AudioFullURL: playURL,
+			})
 		}
 	}
 	return out

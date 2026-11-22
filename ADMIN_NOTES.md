@@ -630,3 +630,42 @@ cookie 从自己电脑的浏览器拿：打开 `https://bff-pc.qishui.com` → �
 F12 → Application → Cookies → 复制该域下全部（关键是 `sessionid`）。
 注意 2026-11-22 傍晚试过注入**抖音网页版**的 cookie，结果汽水直接回
 `ERR_REQUEST_FORBIDDEN/1000006`（风控），所以必须是**汽水站自己**的 cookie。
+
+## 十七、新增「喜马拉雅」音源（2026-11-23 凌晨）
+
+需求来源：用户提出接入 `sld272/Ximalaya-Downloader-Next` 那套思路。那个项目的定位是
+「用你自己账号权限批量下载」，核心是浏览器登录 + xm-sign 签名 + APK 协议，代码量很大
+（sign/extractor、source_pc、source_http、native_signer 全套）。本站只需要「搜得到 + 放得响」，
+所以**没有照搬它的签名链路**，而是找到了网页版匿名就能用的两个公开接口。
+
+### 实际用的接口（2026-11-23 01:50 在东京机器实测）
+
+| 用途 | 请求 | 说明 |
+|---|---|---|
+| 预热 cookie | `GET https://www.ximalaya.com/` | 拿 `HWWAFSESID`，不预热搜索直接 **400** |
+| 搜索 | `GET /revision/search?core=track&kw=<关键词>&page=1&rows=N&spellchecker=true&condition=relation&device=web` | 返回 `data.result.response.docs[]`：`id / title / nickname / duration(秒) / is_paid / cover_path` |
+| 取链 | `GET /revision/play/tracks?trackIds=<id>` | 返回 `data.tracksForAudioPlay[0].src`（m4a），**只有免费内容才有 `src`** |
+
+实测数据：免费节目《周杰伦歌友会》5330 秒，直链 43MB（约 64kbps m4a），
+`/stream_live` 转码后 20.8MB / 5331 秒，`http=200`；付费节目（三体广播剧）取链没有 `src`，
+返回 `403 该音频需要喜马拉雅会员，本站无法播放`。
+
+### 集成方式（和汽水不同的两点）
+
+1. **只在「喜马拉雅」筛选按钮下出现**。喜马拉雅的内容是有声书/播客/广播剧，和音乐源
+   完全不重叠，混进「全部」会把搜索结果冲成播客列表，所以 `searchFromAPI` 里没有它。
+2. **播放带 `xid`**。搜索结果里的播放地址是
+   `/stream_live?song=..&singer=..&xid=<trackId>`，`/stream_live` 看到 `xid` 就按 id 直取，
+   **不走多源链路**。原因：这些播客标题常常就是歌名（比如「晴天｜周杰伦」），
+   靠「歌名+歌手」二次解析必然张冠李戴。
+
+改动清单：
+
+- 新增 `ximalaya.go`：带 cookiejar 的 client + 首页预热（cookie 30 分钟一换，400/403 自动重来）、
+  `XimalayaSearchLimit()`、`XimalayaTrackSrc()`
+- `search.go`：`livePlayURLX()`（带 xid 的播放地址）、`searchOnlySource` 增加 `case "ximalaya"`
+- `api.go`：`/stream_live` 读取 `xid`，命中时改为按 id 取链
+- `history.go`：来源白名单加 `ximalaya`
+- `theme/full-app.html`：筛选栏加「喜马拉雅」按钮 + `SRC_META` 加橙色播放图标徽标
+
+开关：`XIMALAYA_ENABLED=0` 可整源关闭（默认开）。会员内容不绕过付费墙，这是上游本身的限制。

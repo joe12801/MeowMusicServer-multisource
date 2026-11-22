@@ -196,8 +196,11 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	song := queryParams.Get("song")
 	singer := queryParams.Get("singer")
+	// xid：喜马拉雅的 trackId。这类内容（有声书/播客）和音乐源完全不重叠，
+	// 只能按 id 直取，不能靠歌名二次解析。
+	xid := strings.TrimSpace(queryParams.Get("xid"))
 
-	fmt.Printf("[Stream Live] Request: song=%s, singer=%s\n", song, singer)
+	fmt.Printf("[Stream Live] Request: song=%s, singer=%s, xid=%s\n", song, singer, xid)
 
 	if song == "" {
 		http.Error(w, "Missing song parameter", http.StatusBadRequest)
@@ -243,7 +246,21 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("[Stream Live] Cache miss, fetching from API...\n")
 
-	remoteURL, srcName := getRemoteMusicURLWithSource(song, singer)
+	var remoteURL, srcName string
+	if xid != "" {
+		// 喜马拉雅：按 trackId 直取，不跑多源链路
+		srcName = sourceXimalaya
+		src, err := XimalayaTrackSrc(xid)
+		if err != nil {
+			fmt.Printf("[Stream Live] 喜马拉雅取链失败 xid=%s: %v\n", xid, err)
+			w.Header().Set("X-Source", sourceXimalaya)
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		remoteURL = src
+	} else {
+		remoteURL, srcName = getRemoteMusicURLWithSource(song, singer)
+	}
 	if remoteURL == "" {
 		http.Error(w, "Failed to get remote music URL", http.StatusNotFound)
 		return
