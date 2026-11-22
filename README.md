@@ -279,6 +279,45 @@ sudo systemctl daemon-reload && sudo systemctl restart meowmusic
 
 ---
 
+## 补充音源（只在单源筛选下出现）
+
+上面十层是「点歌」用的回退链路，走 `getRemoteMusicURL`。另外还有五个源按内容类型补充，它们的内容和唱片公司曲库完全不重叠，混进主链路只会把搜索结果冲乱，所以只在你点选对应按钮（`?source=xxx`）时才查：
+
+| 源 | `source=` | 内容 | 开关 |
+|---|---|---|---|
+| 喜马拉雅 | `ximalaya` | 有声书 / 播客 / 广播剧 | `XIMALAYA_ENABLED` |
+| 5sing | `fivesing` | 原创 / 翻唱 / 伴奏社区 | `FIVESING_ENABLED` |
+| B 站 | `bilibili` | UP 主上传的现场 / 修复版 / Hi-Res 二创 | `BILI_ENABLED` |
+| 荔枝 FM | `lizhi` | 播客 / 有声书 / 网络电台 | `LIZHI_ENABLED` |
+| 汽水音乐 | `qishui` | 抖音曲库 | `QISHUI_ENABLED` |
+
+这几类的共同点是**不能靠「歌名 + 歌手」二次解析**：喜马拉雅和荔枝搜「三体」返回的是解读三体的播客，B 站返回的是 UP 主的视频版本，拿歌名回主链路去解析必然张冠李戴。所以它们的播放地址都带上游 id，`/stream_live` 按 id 直取：
+
+```
+xid=<trackId>            喜马拉雅
+xid=fs:<songId>:<type>   5sing（取链必须同时给 id 和作品类型 yc/fc/bz）
+xid=lz:<voiceId>:<日期>   荔枝（日期用于详情接口不可用时兜底拼 CDN 路径）
+bv=<BV 号>               B 站
+```
+
+### 荔枝 FM `lizhi.go`
+
+```
+搜索  https://m.lizhi.fm/vodapi/search/voice?deviceId=<h5-fixed>&keywords=<kw>&page=<n>&receiptData=<上次的>
+取链  https://m.lizhi.fm/vodapi/voice/info/<voiceId>
+```
+
+四个实测坑：
+
+1. **UA 必须是 iPhone**。H5 接口用 Chrome 桌面 UA 直接 403；音频 CDN 同样校验 UA，ffmpeg 默认的 `Lavf/x.y` 也 403（和 B 站一样走 `ensureMusicCacheWithHeaders` 带上 UA）。
+2. **翻页要带 `receiptData` 游标**。不带它 `page=2` 会原样返回第一页。游标在响应顶层。
+3. **付费单集没有 `trackUrl`**。`playAccessProperty.accessPermission` 免费是 2、付费是 4，付费条目连 `trackUrl` 字段都不给，只有 `voiceAuditionProperty: 210`（试听 210 秒）。这类直接过滤，别让用户点进去才发现只能听 3 分半。
+4. **只有 `_hd.mp3` 这一档能用**。网上流传的 `_ud.mp3` 现在全部 404，`_sd.m4a` 能拉但码率只有约 14kbps（人声都糊）。
+
+另外两个工程处理：**单集时长上限 3 小时**（2 小时那档实测下载 117MB + 转码约 70s，再长会顶到 `ensureMusicCache` 的 240s 超时）；**搜索加了二元组相关性过滤**，因为荔枝是按分词召回的，搜「明朝那些事儿」会返回一条叫「遗憾的事」的 70 秒语音——只保留标题或主播名至少命中一个查询二元组的结果，一条都不沾边时才退回原始召回（宁滥勿缺）。
+
+---
+
 ## 版本噪声统一判定（`srcNoiseOf` / `srcTitleScore`）
 
 新增的三个源（网易云直连 / QQ / 酷狗）有一个共同困境：**它们的免费曲池里，"二次加工版"占了大多数**。如果不做严格判定，会出现这些真实错误：
@@ -384,6 +423,9 @@ MUSIC_SOURCES=kuwo,xfabe,gdstudio,yuafeng ./MeowMusicServer
 ```
 
 可用值：`kuwo` `netease` `xfabe` `qq` `kugou` `gdstudio` `mp3api` `yuafeng`。（`netease` 同时控制「直连」和「本地 API」两条网易云链路。）
+
+补充音源不在这套 `MUSIC_SOURCES` 里，各有独立开关，默认全开，设成 `0` 关掉：
+`XIMALAYA_ENABLED` `FIVESING_ENABLED` `BILI_ENABLED` `LIZHI_ENABLED` `QISHUI_ENABLED`。
 
 日志里每个请求都会先打一行当前开关状态，便于确认配置生效：
 

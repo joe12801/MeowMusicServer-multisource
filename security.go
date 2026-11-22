@@ -207,6 +207,8 @@ var defaultProxyHosts = []string{
 	"yaohud.cn", "yuafeng.cn", "migu.cn",
 	"googlevideo.com", "ytimg.com", "youtube.com",
 	"hdslb.com", "bilivideo.com", "bilivideo.cn", "akamaized.net",
+	// 荔枝 FM：音频在 cdn5/cdn101.lizhi.fm，封面在 cdnimg*.gzlzfm.com
+	"lizhi.fm", "gzlzfm.com",
 }
 
 func proxyHostAllowed(host string) bool {

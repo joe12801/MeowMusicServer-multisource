@@ -296,12 +296,15 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 	case xid != "":
 		// 按 xid 直取，不跑多源链路。xid 前缀区分来源：
 		//   fs:...  → 5sing（songId + typeEname）
+		//   lz:...  → 荔枝 FM（voiceId + 日期）
 		//   纯数字  → 喜马拉雅 trackId
+		// 荔枝必须靠前缀认：它的 voiceId 是纯数字，和喜马拉雅的 trackId 同形。
 		var (
 			src string
 			err error
 		)
-		if strings.HasPrefix(xid, fiveSingXIDPrefix) {
+		switch {
+		case strings.HasPrefix(xid, fiveSingXIDPrefix):
 			srcName = sourceFiveSing
 			src, err = FiveSingTrackSrc(xid)
 			if err != nil {
@@ -310,7 +313,16 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusForbidden)
 				return
 			}
-		} else {
+		case strings.HasPrefix(xid, lizhiXIDPrefix):
+			srcName = sourceLizhi
+			src, err = LizhiTrackSrc(xid)
+			if err != nil {
+				fmt.Printf("[Stream Live] 荔枝取链失败 xid=%s: %v\n", xid, err)
+				w.Header().Set("X-Source", sourceLizhi)
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+		default:
 			srcName = sourceXimalaya
 			src, err = XimalayaTrackSrc(xid)
 			if err != nil {
@@ -321,7 +333,19 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		remoteURL = src
-		refetch = func() string { return "" }
+		// 荔枝直链不带签名，cdn5 / cdn101 是两条线路，
+		// 一条拉不动时换另一条通常能过（实测 cdn5 更快，所以它在前）。
+		lzBackups := lizhiBackupURLs(remoteURL)
+		refetch = func() string {
+			for len(lzBackups) > 0 {
+				next := lzBackups[0]
+				lzBackups = lzBackups[1:]
+				if next != "" {
+					return next
+				}
+			}
+			return ""
+		}
 	default:
 		remoteURL, srcName = getRemoteMusicURLWithSource(song, singer)
 		refetch = func() string { return refetchRemoteURL(song, singer, srcName) }
@@ -331,10 +355,13 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// B 站的音频 CDN 认浏览器 UA，转码时得把头一起传下去
+	// B 站和荔枝的音频 CDN 都认浏览器 UA，转码时得把头一起传下去
 	var streamHeaders map[string]string
-	if srcName == sourceBilibili {
+	switch srcName {
+	case sourceBilibili:
 		streamHeaders = biliStreamHeaders()
+	case sourceLizhi:
+		streamHeaders = lizhiStreamHeaders()
 	}
 
 	// 转码失败重试：只对「直链会换节点」的源有意义（汽水、B站）。

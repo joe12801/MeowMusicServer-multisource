@@ -367,6 +367,15 @@ func searchOnlySource(only, query, artist string, limit int) []MusicItem {
 		for _, s := range FiveSingSearchLimit(song, singer, limit) {
 			addID(sourceFiveSing, s.Name, s.Artist, 0, "", fiveSingTrackXID(s.ID, s.Type))
 		}
+	case "lizhi":
+		// 荔枝同理带 xid（lz:<voiceId>:<yyyymmdd>）：节目靠歌名二次解析
+		// 会拿到同名但完全不同的内容，而且它的 voiceId 是纯数字，
+		// 和喜马拉雅的 trackId 同形，必须靠前缀区分。
+		// 时长搜索接口直接给，封面和主播名也都有，不需要兜底。
+		for _, s := range LizhiSearchLimit(song, singer, limit) {
+			addID(sourceLizhi, s.Name, s.Artist, s.Duration, s.Cover,
+				lizhiTrackXID(s.ID, s.Day))
+		}
 	case "bilibili", "bili":
 		// B 站同理带 bv：搜到的是 UP 主的视频，靠歌名二次解析会拿到别的版本。
 		// 去重按 BV 号——同一首歌的不同现场/修复版都该保留。

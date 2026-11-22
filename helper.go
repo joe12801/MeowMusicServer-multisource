@@ -403,7 +403,7 @@ func getRemoteMusicURLWithSource(song, singer string) (string, string) {
 // 汽水：直链按请求随机分配 CDN 节点，约 1/3 落到不通的节点。
 // B 站：DASH 直链带有效期且有多备选 CDN，失败时换备用地址/重签一次值得。
 func retryableTranscodeSource(source string) bool {
-	return source == sourceQishui || source == sourceBilibili
+	return source == sourceQishui || source == sourceBilibili || source == sourceLizhi
 }
 
 // refetchRemoteURL 转码失败后只针对该源重新取一次直链，不重跑整条多源链路。
