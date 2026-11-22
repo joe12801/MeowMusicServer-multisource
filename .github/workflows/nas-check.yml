@@ -1,5 +1,6 @@
 # 临时诊断：在 NAS runner 上只读检查 meowmusic 部署状态。
-# 用完即删（分支 tmp/nas-check），不要合并到 main。
+# 结果同时写到 stdout 和 /tmp/nascheck.txt，最后作为 artifact 上传
+# （GitHub 有时不给 self-hosted run 归档日志，artifact 更可靠）。用完即删。
 name: NAS Check
 
 on:
@@ -11,34 +12,38 @@ jobs:
     runs-on: [self-hosted, nas]
     timeout-minutes: 10
     steps:
-      - name: 主机信息
+      - name: 收集信息
         run: |
-          hostname; uname -m; date; df -h /vol1 | tail -1
+          OUT=/tmp/nascheck.txt
+          : > $OUT
+          echo "===== 主机 =====" | tee -a $OUT
+          (hostname; uname -m; date; df -h /vol1 | tail -1) 2>&1 | tee -a $OUT
+          echo "===== 部署目录 =====" | tee -a $OUT
+          ls -la /vol1/meowmusic/deploy/ 2>&1 | head -20 | tee -a $OUT
+          echo "----- .env 关键项（其余脱敏）-----" | tee -a $OUT
+          (grep -E '^(MEOW_IMAGE|MEOW_PORT|MEOW_DATA_DIR|QISHUI_BASE|QISHUI_ENABLED|MUSIC_SOURCES)=' /vol1/meowmusic/deploy/.env 2>/dev/null || echo "(无 .env 或无匹配项)") | tee -a $OUT
+          echo "----- .env 全部键名 -----" | tee -a $OUT
+          (grep -oE '^[A-Z_0-9]+' /vol1/meowmusic/deploy/.env 2>/dev/null | sort -u | tr '\n' ' ') | tee -a $OUT
+          echo | tee -a $OUT
+          echo "===== 容器 =====" | tee -a $OUT
+          docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' 2>&1 | head -20 | tee -a $OUT
+          echo "===== meow-music 环境变量 =====" | tee -a $OUT
+          (docker exec meow-music printenv 2>/dev/null | grep -E 'QISHUI|MUSIC_SOURCES|PORT' || echo "(容器未运行)") | tee -a $OUT
+          echo "===== 汽水搜索 =====" | tee -a $OUT
+          (curl -s -m 25 "http://127.0.0.1:2233/api/search?query=%E5%85%89%E8%BE%89%E5%B2%81%E6%9C%88&source=qishui&limit=3" | head -c 400) 2>&1 | tee -a $OUT
+          echo | tee -a $OUT
+          echo "===== 健康 =====" | tee -a $OUT
+          (curl -s -o /dev/null -w 'healthz=%{http_code}\n' -m 5 http://127.0.0.1:2233/healthz) 2>&1 | tee -a $OUT
+          echo "===== 镜像 =====" | tee -a $OUT
+          (docker images --format '{{.Repository}}:{{.Tag}} {{.CreatedAt}} {{.Size}}' | grep -iE 'meow|gomusic|lrcapi|qishui' | head -10) 2>&1 | tee -a $OUT
+          echo "===== 容器内 DNS 解析 =====" | tee -a $OUT
+          (docker exec meow-music sh -c 'getent hosts qishui-proxy || echo "qishui-proxy 解析失败"; getent hosts gomusic || echo "gomusic 解析失败"' 2>&1) | tee -a $OUT
+          echo "===== DONE =====" | tee -a $OUT
 
-      - name: 部署目录
-        run: |
-          ls -la /vol1/meowmusic/deploy/ 2>&1 | head -20
-          echo "--- .env 关键项（其余脱敏）---"
-          grep -E '^\s*(MEOW_IMAGE|MEOW_PORT|MEOW_DATA_DIR|QISHUI_BASE|QISHUI_ENABLED|MUSIC_SOURCES)=' /vol1/meowmusic/deploy/.env 2>/dev/null || echo "(没有 .env 或无匹配项)"
-          echo "--- .env 其余键名 ---"
-          grep -oE '^[A-Z_]+' /vol1/meowmusic/deploy/.env 2>/dev/null | sort -u | tr '\n' ' '
-
-      - name: 容器状态
-        run: |
-          docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | head -20
-
-      - name: meow-music 内环境变量
-        run: |
-          docker exec meow-music printenv 2>/dev/null | grep -E 'QISHUI|MUSIC_SOURCES|PORT' || echo "(容器未运行)"
-
-      - name: 汽水端到端探测
-        run: |
-          echo "--- 搜一条汽水的歌 ---"
-          curl -s -m 25 "http://127.0.0.1:2233/api/search?query=%E5%85%89%E8%BE%89%E5%B2%81%E6%9C%88&source=qishui&limit=3" | head -c 400
-          echo
-          echo "--- 服务健康 ---"
-          curl -s -o /dev/null -w 'health=%{http_code}\n' -m 5 http://127.0.0.1:2233/healthz
-
-      - name: 镜像
-        run: |
-          docker images --format '{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}\t{{.Size}}' | grep -iE 'meow|gomusic|lrcapi|qishui' | head -10
+      - name: 上传结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nascheck
+          path: /tmp/nascheck.txt
+          retention-days: 1
