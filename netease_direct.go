@@ -79,6 +79,24 @@ func neGet(rawURL string, ref bool) (*http.Response, error) {
 	return c.Do(req)
 }
 
+// nePostForm 以表单 POST 打网易云接口。
+//
+// 2026-11 起 GET /api/search/get/web 改成返回加密串（{"result":"<hex>"}），
+// json 解析直接失败、网易云搜索整条链路静默失效（日志里是
+// "cannot unmarshal string into ... neSearchResp.result"）。
+// 换成 POST /api/search/get 仍然是明文 JSON，加 Referer 即可。
+func nePostForm(rawURL string, form url.Values) (*http.Response, error) {
+	c := neHTTP()
+	req, err := http.NewRequest("POST", rawURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", neUA)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", "https://music.163.com/")
+	return c.Do(req)
+}
+
 // neWarmup 取一次首页把 cookie 灌进 jar。失败不致命，后续请求可能仍能用。
 func neWarmup() {
 	neBootOnce.Do(func() {
@@ -107,16 +125,23 @@ type neSong struct {
 type neSearchResp struct {
 	Result struct {
 		Songs []struct {
-			ID       int64 `json:"id"`
+			ID       int64  `json:"id"`
 			Name     string `json:"name"`
 			Fee      int    `json:"fee"`
-			Duration int    `json:"duration"` // 毫秒
+			Duration int    `json:"duration"` // 旧接口 /api/search/get：毫秒
+			DT       int    `json:"dt"`       // cloudsearch：毫秒
 			Artists  []struct {
 				Name string `json:"name"`
 			} `json:"artists"`
+			AR []struct {
+				Name string `json:"name"`
+			} `json:"ar"`
 			Album struct {
 				Name string `json:"name"`
 			} `json:"album"`
+			AL struct {
+				Name string `json:"name"`
+			} `json:"al"`
 		} `json:"songs"`
 	} `json:"result"`
 }
@@ -157,16 +182,25 @@ func neSearchLimit(song, singer string, limit int) []neSong {
 func neSearchPage(song, singer string, offset, limit int) []neSong {
 	neWarmup()
 	keyword := strings.TrimSpace(song + " " + singer)
-	api := "https://music.163.com/api/search/get/web?s=" + url.QueryEscape(keyword) +
-		"&type=1&offset=" + strconv.Itoa(offset) + "&limit=" + strconv.Itoa(limit) + "&total=true"
 
-	resp, err := neGet(api, true)
+	form := url.Values{}
+	form.Set("s", keyword)
+	form.Set("type", "1")
+	form.Set("offset", strconv.Itoa(offset))
+	form.Set("limit", strconv.Itoa(limit))
+	form.Set("total", "true")
+
+	// 用 cloudsearch/pc，不要用 api/search/get。
+	// 2026-11 实测 api/search/get 与 /web 两条都已失效：
+	// 前者返回完全不相干的结果（搜「晴天」给一首叫「93」的歌），
+	// 后者直接返回加密串。cloudsearch 仍是明文 JSON，字段是 ar/al/dt。
+	resp, err := nePostForm("https://music.163.com/api/cloudsearch/pc", form)
 	if err != nil {
 		fmt.Printf("[Netease] search error: %v\n", err)
 		return nil
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 
 	var r neSearchResp
 	if err := json.Unmarshal(body, &r); err != nil {
@@ -175,18 +209,36 @@ func neSearchPage(song, singer string, offset, limit int) []neSong {
 	}
 	out := make([]neSong, 0, len(r.Result.Songs))
 	for _, s := range r.Result.Songs {
-		names := make([]string, 0, len(s.Artists))
+		names := make([]string, 0, 2)
 		for _, a := range s.Artists {
 			names = append(names, a.Name)
+		}
+		if len(names) == 0 {
+			for _, a := range s.AR {
+				names = append(names, a.Name)
+			}
+		}
+		album := s.Album.Name
+		if album == "" {
+			album = s.AL.Name
+		}
+		ms := s.Duration
+		if ms == 0 {
+			ms = s.DT
 		}
 		out = append(out, neSong{
 			ID:       s.ID,
 			Name:     s.Name,
 			Artist:   strings.Join(names, "/"),
-			Album:    s.Album.Name,
-			Duration: s.Duration / 1000,
+			Album:    album,
+			Duration: ms / 1000,
 			Fee:      s.Fee,
 		})
+	}
+	if len(out) == 0 {
+		// 排障用：区分「真的没搜到」和「接口返回了加密/风控内容」
+		fmt.Printf("[Netease] empty page: status=%d ct=%q len=%d head=%q\n",
+			resp.StatusCode, resp.Header.Get("Content-Type"), len(body), string(body[:min(len(body), 120)]))
 	}
 	return out
 }

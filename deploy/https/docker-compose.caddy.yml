@@ -1,0 +1,34 @@
+# 在现有 meowmusic 服务前面加一层 Caddy（TLS 终结）
+#
+# 前提：meow-music 容器已经在跑（docker ps 能看到），网络名默认 meowmusic_default
+# 用法：cd deploy/https && cp .env.example .env && 改好域名 →
+#       docker compose -f docker-compose.caddy.yml up -d
+
+name: meowmusic-tls
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: meow-caddy
+    restart: unless-stopped
+    ports:
+      # 宿主机端口 : 容器内 443（Caddyfile 里用域名块，默认监听 443）
+      - "${MEOW_HTTPS_PORT:-8443}:443"
+      # 80 端口空着时再打开下面这行（Let's Encrypt HTTP-01 验证需要）
+      # - "80:80"
+    environment:
+      MEOW_DOMAIN: "${MEOW_DOMAIN}"
+      MEOW_ACME_EMAIL: "${MEOW_ACME_EMAIL:-}"
+      MEOW_UPSTREAM: "${MEOW_UPSTREAM:-meow-music:2233}"
+      CF_API_TOKEN: "${CF_API_TOKEN:-}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data:/data
+      - ./config:/config
+    networks:
+      - meow-net
+
+networks:
+  meow-net:
+    name: ${MEOW_NETWORK:-meowmusic_default}
+    external: true

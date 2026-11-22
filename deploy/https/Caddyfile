@@ -1,0 +1,56 @@
+# Caddy 反代示例（路线 B：拿不到 80/443，用别的端口做 TLS）
+#
+# 用法：
+#   cp .env.example .env    # 填 MEOW_DOMAIN / MEOW_HTTPS_PORT / MEOW_UPSTREAM
+#   docker compose -f docker-compose.caddy.yml up -d
+#
+# 说明：
+# - 80 端口被别的东西占着时，Let's Encrypt 的 HTTP-01 验不过。
+#   要么把 80 让出来，要么用下面的 DNS-01（注释掉的部分）。
+# - meow-music 必须和 caddy 在同一个 docker 网络里，upstream 才能用容器名。
+
+{
+	# 生产环境把下面这行注释掉，只在调试时打开（会记下完整 URL）
+	# log {
+	# 	output stdout
+	# 	format console
+	# }
+	admin off
+}
+
+{$MEOW_DOMAIN} {
+	# ---- 方案 1：HTTP-01（80 端口可用时）----
+	# tls {$MEOW_ACME_EMAIL}
+
+	# ---- 方案 2：DNS-01（80 不可用，需要 DNS 服务商 API Token）----
+	# 先装带 DNS 插件的镜像，例如：
+	#   image: caddy:2-builder 里 xcaddy build --with github.com/caddy-dns/cloudflare
+	# tls {
+	# 	dns cloudflare {$CF_API_TOKEN}
+	# 	resolvers 1.1.1.1
+	# }
+
+	# 没有域名 / 只是内网自用：自签证书（浏览器会警告，但传输是加密的）
+	tls internal
+
+	encode gzip zstd
+
+	# 流式转码是长连接：关掉缓冲，超时放宽
+	reverse_proxy {$MEOW_UPSTREAM} {
+		flush_interval -1
+		transport http {
+			read_timeout 1h
+			write_timeout 1h
+		}
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 3
+		}
+	}
+}

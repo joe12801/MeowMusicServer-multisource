@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设备遥控 · Meow Music</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --text:#e6e9ef; --muted:#8b93a7; --accent:#4ea1ff; --ok:#35c46a; --bad:#ff5c5c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  header{display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line);
+    background:var(--panel);flex-wrap:wrap}
+  h1{font-size:16px;margin:0;font-weight:600}
+  .grow{flex:1}
+  a{color:var(--accent);text-decoration:none;font-size:13px}
+  main{max-width:880px;margin:0 auto;padding:20px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  select,input{background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text);
+    padding:8px 10px;font-size:14px;outline:none}
+  select:focus,input:focus{border-color:var(--accent)}
+  button{background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--text);
+    padding:10px 16px;font-size:14px;cursor:pointer;min-width:64px}
+  button:hover{border-color:var(--accent)}
+  button:active{transform:translateY(1px)}
+  button.primary{background:rgba(78,161,255,.16);border-color:rgba(78,161,255,.5)}
+  .big{font-size:20px;padding:14px 22px}
+  .muted{color:var(--muted);font-size:12px}
+  .badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px}
+  .on{background:rgba(53,196,106,.14);color:var(--ok)}
+  .off{background:rgba(139,147,167,.14);color:var(--muted)}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px}
+  .kv .k{color:var(--muted)}
+  #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(12px);
+    background:#1f2530;border:1px solid var(--line);color:var(--text);padding:10px 18px;border-radius:10px;
+    opacity:0;pointer-events:none;transition:.25s;font-size:13px;max-width:80vw}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .vol{display:flex;align-items:center;gap:10px;flex:1;min-width:220px}
+  input[type=range]{flex:1;accent-color:var(--accent)}
+  .tips{color:var(--muted);font-size:12px;line-height:1.9;margin-top:10px}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>设备遥控</h1>
+  <span class="muted" id="login-state"></span>
+  <span class="grow"></span>
+  <a href="/">返回播放器</a>
+  <a href="/status">运行状态</a>
+</header>
+
+<main>
+  <div class="panel">
+    <div class="row">
+      <span class="muted">设备</span>
+      <select id="devices"><option value="">加载中…</option></select>
+      <button id="reload">刷新</button>
+    </div>
+    <div class="kv" style="margin-top:12px">
+      <span class="k">状态</span><span id="dev-state">-</span>
+      <span class="k">待取指令</span><span id="dev-pending">-</span>
+      <span class="k">最近回报</span><span id="dev-ack">-</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="row" style="justify-content:center;gap:14px">
+      <button class="big" data-action="prev" title="上一首">⏮</button>
+      <button class="big primary" data-action="pause" title="暂停">⏸</button>
+      <button class="big primary" data-action="resume" title="继续播放">▶</button>
+      <button class="big" data-action="next" title="下一首">⏭</button>
+      <button class="big" data-action="stop" title="停止">⏹</button>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <span class="muted" style="width:34px">音量</span>
+      <div class="vol">
+        <input type="range" id="vol" min="0" max="100" value="60">
+        <span class="muted" id="vol-val" style="width:36px">60</span>
+      </div>
+      <button id="vol-send">应用</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <input id="song" placeholder="歌名" style="flex:1;min-width:140px">
+      <input id="singer" placeholder="歌手" style="width:130px">
+      <button class="primary" id="play-song">让设备播放</button>
+      <button id="reload-pl">重载歌单</button>
+    </div>
+    <div class="tips">
+      指令会先进入服务端队列，设备下次轮询（<code>/api/esp32/poll</code>）时取走。
+      当前固件还没有实现这个轮询，所以指令会一直显示「待取指令」——需要固件加一行
+      拉取逻辑，见 <code>DEVICE_CONTROL.md</code>。<br>
+      指令 5 分钟未取走自动过期；设备端只能用 <code>X-Device-Token</code> 拉自己的指令。
+    </div>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let currentMAC = '';
+
+function toast(msg){
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+async function api(path, opts){
+  const r = await fetch(path, Object.assign({credentials:'same-origin', cache:'no-store'}, opts || {}));
+  let data = {};
+  try { data = await r.json(); } catch(e){}
+  return {status: r.status, data};
+}
+
+async function loadDevices(){
+  const {status, data} = await api('/api/device/list');
+  const sel = $('devices');
+  if(status === 401){
+    $('login-state').textContent = '未登录';
+    sel.innerHTML = '<option value="">请先登录</option>';
+    $('dev-state').innerHTML = '<span class="badge off">未登录</span> 先到 <a href="/">播放器</a> 登录，再回来操作';
+    return;
+  }
+  if(!data.success){
+    sel.innerHTML = '<option value="">读取失败</option>';
+    toast(data.message || '读取设备失败');
+    return;
+  }
+  $('login-state').textContent = '';
+  const list = data.devices || [];
+  if(list.length === 0){
+    sel.innerHTML = '<option value="">还没有绑定设备</option>';
+    $('dev-state').innerHTML = '<span class="badge off">无设备</span> 到 <a href="/device-bind">绑定页</a> 先绑一台';
+    return;
+  }
+  const keep = currentMAC;
+  sel.innerHTML = list.map(d =>
+    '<option value="' + d.mac + '">' + (d.device_name || d.mac) + ' · ' + d.mac + '</option>'
+  ).join('');
+  if(keep && list.some(d => d.mac === keep)) sel.value = keep;
+  currentMAC = sel.value;
+  loadStatus();
+}
+
+async function loadStatus(){
+  if(!currentMAC) return;
+  const {data} = await api('/api/device/command/status?mac=' + encodeURIComponent(currentMAC));
+  if(!data.success) return;
+  const d = (data.devices || [])[0];
+  if(!d) return;
+  $('dev-state').innerHTML = d.online
+    ? '<span class="badge on">在线</span>'
+    : '<span class="badge off">离线</span>';
+  $('dev-pending').textContent = (d.pending ?? 0) + ' 条';
+  $('dev-ack').textContent = d.last_command
+    ? (d.last_ok ? '✅ ' : '❌ ') + (d.last_ack_time || '') + (d.last_error ? ' · ' + d.last_error : '')
+    : '尚无';
+}
+
+async function send(action, params){
+  if(!currentMAC){ toast('先选一台设备'); return; }
+  const body = JSON.stringify({mac: currentMAC, action: action, params: params || null});
+  const {status, data} = await api('/api/device/command', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: body
+  });
+  if(status === 401){ toast('登录已失效，请回首页重新登录'); return; }
+  if(!data.success){ toast(data.message || '下发失败'); return; }
+  toast('已入队：' + action + '（队列 ' + data.queued + '）');
+  loadStatus();
+}
+
+document.querySelectorAll('[data-action]').forEach(btn => {
+  btn.addEventListener('click', () => send(btn.dataset.action));
+});
+
+$('vol').addEventListener('input', () => { $('vol-val').textContent = $('vol').value; });
+$('vol-send').addEventListener('click', () => send('volume', {value: parseInt($('vol').value, 10)}));
+
+$('play-song').addEventListener('click', () => {
+  const song = $('song').value.trim();
+  if(!song){ toast('先填歌名'); return; }
+  send('play_song', {song: song, singer: $('singer').value.trim()});
+});
+
+$('reload-pl').addEventListener('click', () => send('reload_playlist'));
+
+$('devices').addEventListener('change', () => {
+  currentMAC = $('devices').value;
+  loadStatus();
+});
+
+$('reload').addEventListener('click', loadDevices);
+
+loadDevices();
+setInterval(loadStatus, 5000);
+</script>
+</body>
+</html>

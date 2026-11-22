@@ -43,7 +43,11 @@ func mp3ApiBase() string {
 }
 
 func mp3ApiKey() string {
-	return strings.TrimSpace(os.Getenv("MUSIC_MP3API_KEY"))
+	if k := strings.TrimSpace(os.Getenv("MUSIC_MP3API_KEY")); k != "" {
+		return k
+	}
+	// 环境变量没配时，用 /tools 页面里保存的 KEY（即时生效，不用重启）
+	return storedMP3ApiKey()
 }
 
 // mp3ApiFirst 由 MUSIC_MP3API_FIRST=1 开启：把本源临时提到整条链路最前。

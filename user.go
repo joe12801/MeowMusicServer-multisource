@@ -114,7 +114,7 @@ func (us *UserStore) saveToFile() error {
 		return err
 	}
 
-	return os.WriteFile(us.filePath, data, 0644)
+	return writeFileAtomic(us.filePath, data, 0o600)
 }
 
 // loadSessionsFromFile restores persisted login sessions on startup.
@@ -157,7 +157,7 @@ func (us *UserStore) saveSessionsToFile() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(us.sessionsFilePath, data, 0600)
+	return writeFileAtomic(us.sessionsFilePath, data, 0o600)
 }
 
 // generateID generates a random ID
@@ -293,7 +293,8 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	fmt.Printf("[API] Body received: %s\n", string(body))
+	// 不能打印请求体：里面有明文密码，会留在 docker logs 里
+	fmt.Printf("[API] Register body received: %d bytes\n", len(body))
 
 	var req RegisterRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -340,6 +341,8 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("[Info] User registered: %s\n", user.Username)
 
+	setSessionCookie(w, r, token)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(AuthResponse{
@@ -366,7 +369,8 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	fmt.Printf("[API] Login body: %s\n", string(body))
+	// 不能打印请求体：里面有明文密码，会留在 docker logs 里
+	fmt.Printf("[API] Login body received: %d bytes\n", len(body))
 
 	var req LoginRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -387,6 +391,10 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("[Info] User logged in: %s\n", user.Username)
 
+	// 同时写 HttpOnly Cookie：浏览器打开 /status、/remote 这类页面时
+	// 带不了 Authorization 头，只能靠 Cookie 认人。
+	setSessionCookie(w, r, token)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(AuthResponse{
 		Token: token,
@@ -401,14 +409,20 @@ func HandleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := r.Header.Get("Authorization")
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token == "" {
+		// 只带 Cookie 的会话（登录后浏览器）也要能退出
+		if c, err := r.Cookie(sessionCookieName); err == nil {
+			token = c.Value
+		}
+	}
+	// 无论 token 有没有取到，都把 Cookie 清掉，避免「点了退出页面还能进」
+	clearSessionCookie(w, r)
+
 	if token == "" {
 		http.Error(w, "Missing authorization token", http.StatusUnauthorized)
 		return
 	}
-
-	// Remove "Bearer " prefix if present
-	token = strings.TrimPrefix(token, "Bearer ")
 
 	userStore.Logout(token)
 
@@ -421,14 +435,17 @@ func HandleLogout(w http.ResponseWriter, r *http.Request) {
 
 // HandleGetCurrentUser returns current user info
 func HandleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
-	token := r.Header.Get("Authorization")
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token == "" {
+		// 只带 Cookie 的登录态（浏览器页面）也要能取到当前用户
+		if c, err := r.Cookie(sessionCookieName); err == nil {
+			token = c.Value
+		}
+	}
 	if token == "" {
 		http.Error(w, "Missing authorization token", http.StatusUnauthorized)
 		return
 	}
-
-	// Remove "Bearer " prefix if present
-	token = strings.TrimPrefix(token, "Bearer ")
 
 	user, err := userStore.GetUserByToken(token)
 	if err != nil {
@@ -502,11 +519,13 @@ func GetUserStore() *UserStore {
 }
 
 // GetUserIDByUsername returns user ID by username
+// 索引键是小写存储的，查询也必须归一化，否则用户名带大写的用户
+// 登录后所有需要 userID 的接口（收藏/歌单/设备）全部拿不到数据。
 func (us *UserStore) GetUserIDByUsername(username string) string {
 	us.mu.RLock()
 	defer us.mu.RUnlock()
 
-	return us.Usernames[username]
+	return us.Usernames[strings.ToLower(strings.TrimSpace(username))]
 }
 
 // GetUsernameByToken 通过session token获取用户名

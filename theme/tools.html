@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>歌单工具 · Meow Music</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --text:#e6e9ef; --muted:#8b93a7; --accent:#4ea1ff; --ok:#35c46a; --bad:#ff5c5c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    padding:16px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
+  h1{font-size:16px;margin:0;font-weight:600}
+  .grow{flex:1}
+  a{color:var(--accent);text-decoration:none;font-size:13px}
+  main{max-width:960px;margin:0 auto;padding:20px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:16px}
+  .panel h2{font-size:14px;margin:0 0 4px;font-weight:600}
+  .hint{color:var(--muted);font-size:12px;margin-bottom:12px}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);font-size:13px}
+  th{color:var(--muted);font-size:12px;font-weight:500}
+  tr:last-child td{border-bottom:none}
+  td.num{font-variant-numeric:tabular-nums;color:var(--muted)}
+  .btn{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+    color:var(--text);padding:5px 11px;font-size:12px;cursor:pointer;text-decoration:none}
+  .btn:hover{border-color:var(--accent)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px}
+  label{font-size:12px;color:var(--muted);display:block;margin:10px 0 5px}
+  input,select{background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text);
+    padding:9px 11px;font-size:13px;outline:none;width:100%;max-width:420px}
+  input:focus,select:focus{border-color:var(--accent)}
+  button.primary{background:rgba(78,161,255,.16);border-color:rgba(78,161,255,.5);
+    border-radius:9px;color:var(--text);padding:9px 18px;font-size:13px;cursor:pointer}
+  button.primary:disabled{opacity:.55;cursor:default}
+  #msg{margin-top:12px;font-size:13px;min-height:20px}
+  #msg.ok{color:var(--ok)} #msg.bad{color:var(--bad)}
+  #ext-msg.ok{color:var(--ok)} #ext-msg.bad{color:var(--bad)}
+  .empty{color:var(--muted);font-size:13px;padding:14px 0}
+  code{background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12px}
+  .tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;border:1px solid transparent;
+    max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+  .tag.ok{background:rgba(53,196,106,.14);color:var(--ok);border-color:rgba(53,196,106,.35)}
+  .tag.bad{background:rgba(255,92,92,.14);color:var(--bad);border-color:rgba(255,92,92,.35)}
+  .tag.off{background:rgba(139,147,167,.12);color:var(--muted);border-color:rgba(139,147,167,.3)}
+  .sub2{color:var(--muted);font-size:11px;margin-top:2px}
+</style>
+</head>
+<body>
+<header>
+  <h1>歌单工具</h1>
+  <span class="grow"></span>
+  <a href="/">返回播放器</a>
+  <a href="/status">运行状态</a>
+</header>
+
+<main>
+  <div class="panel">
+    <h2>我的歌单</h2>
+    <div class="hint">导出的 m3u 里每首歌都指向本机 <code>/stream_live</code>，用 VLC / foobar / 手机播放器打开即可按顺序播（服务器按需转码）。</div>
+    <div id="list"><div class="empty">读取中…</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>导入网易云歌单</h2>
+    <div class="hint">粘贴歌单链接（<code>https://music.163.com/playlist?id=3778678</code>）或纯数字 ID。只取歌名/歌手，播放仍走多源回退，不受版权限制。</div>
+    <label for="src">歌单链接或 ID</label>
+    <input id="src" placeholder="https://music.163.com/playlist?id=3778678">
+    <label for="target">导入到</label>
+    <select id="target"><option value="">＋ 新建歌单</option></select>
+    <div id="name-wrap">
+      <label for="newname">新歌单名称（留空自动用「网易云 · 歌单名」）</label>
+      <input id="newname" placeholder="例如：我的通勤歌单">
+    </div>
+    <label for="limit">最多导入多少首（默认 200，上限 500）</label>
+    <input id="limit" type="number" min="1" max="500" value="200">
+    <label style="display:flex;align-items:center;gap:8px;margin:12px 0 0;color:var(--text)">
+      <input type="checkbox" id="autosync" checked style="width:auto;max-width:none;margin:0">
+      每天自动同步：源歌单以后新增的歌，第二天自动补进来（只加不删）
+    </label>
+    <div class="row">
+      <button class="primary" id="go">开始导入</button>
+      <span class="hint" style="margin:0">导入只加歌，不动原有内容；重复的歌会自动跳过。</span>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="panel">
+    <h2>自动同步任务</h2>
+    <div class="hint" id="sync-hint">每天 <code>05:00</code> 把源歌单的新歌补进本地歌单；服务重启后会补跑一次。</div>
+    <div id="sync-list"><div class="empty">读取中…</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>外部音源（YouTube）</h2>
+    <div class="hint">
+      国内被下架、被禁的歌（例如 Beyond《长城》），酷我/网易云里只剩 DJ 版和翻唱。
+      配上 <code>mp3.994938.xyz</code> 的 KEY 之后，搜索会把 YouTube 上的原曲排到前面，
+      音频由服务器转码后回源，<b>KEY 不会出现在浏览器或设备里</b>。
+      首次播放要等 10~20 秒（对方现下现转），之后同一首秒开。
+    </div>
+    <div id="ext-state" class="hint" style="margin:0 0 4px">读取中…</div>
+    <label for="ext-key">API KEY</label>
+    <input id="ext-key" type="password" placeholder="粘贴 KEY（留空保存 = 清除）" autocomplete="off">
+    <div class="row">
+      <button class="primary" id="ext-save">保存</button>
+      <button class="btn" id="ext-test">测试连接</button>
+    </div>
+    <div class="hint" style="margin:8px 0 0">
+      KEY 保存在 <code>data/files/settings.json</code>（0600），保存后立即生效，不用重启。
+      环境变量 <code>MUSIC_MP3API_KEY</code> 已配置时以它为准。
+    </div>
+    <div id="ext-msg" style="font-size:13px;min-height:20px;margin-top:6px"></div>
+  </div>
+
+  <div class="panel">
+    <h2>歌词源（LrcAPI）</h2>
+    <div class="hint">
+      额外一路歌词来源：<code>github.com/hisatri/lrcapi</code>，背后是 Apple Music 的逐字歌词 + 酷狗聚合。
+      只在 LRCLIB 和网易云都没收录时才去问它（冷门歌、动画 OST、翻唱、被下架的版本），
+      正常播放不会多等一次请求。
+    </div>
+    <div id="lr-state" class="hint" style="margin:0 0 4px">读取中…</div>
+    <label for="lr-base">接口地址</label>
+    <input id="lr-base" placeholder="https://api.lrc.cx" autocomplete="off">
+    <label for="lr-auth">鉴权 KEY（自建实例设了 <code>--auth</code> 才需要）</label>
+    <input id="lr-auth" type="password" placeholder="留空表示不需要" autocomplete="new-password">
+    <div class="row">
+      <button class="primary" id="lr-save">保存</button>
+      <button class="btn" id="lr-test">测试连接</button>
+    </div>
+    <div class="hint" style="margin:8px 0 0">
+      默认公共实例 <code>https://api.lrc.cx</code>；自建填 <code>http://lrcapi:28883</code>（同 Docker 网络里直接用容器名）。
+      保存后立即生效，缓存里已有的歌词不受影响。环境变量 <code>LRCAPI_BASE</code> 优先于这里。
+    </div>
+    <div id="lr-msg" style="font-size:13px;min-height:20px;margin-top:6px"></div>
+  </div>
+
+  <div class="panel">
+    <h2>汽水音乐（抖音曲库）</h2>
+    <div class="hint">
+      汽水没有公开接口，本站用同机的 <code>go-music-api</code> 容器转接（只在 Docker 网络里，不对外开端口）。
+      未登录时只搜得到公开榜单里的歌，且每首只有 <b>60 秒试听</b>；
+      用 <b>抖音 App</b> 扫一次码登录后，搜索和完整播放才生效
+      （登录态存在 <code>data/qishui/cookies.json</code>，容器重建也不用重扫）。
+    </div>
+    <div id="qs-state" class="hint" style="margin:0 0 8px">读取中…</div>
+    <div class="row">
+      <button class="primary" id="qs-qr">生成登录二维码</button>
+      <button class="btn" id="qs-refresh">刷新状态</button>
+    </div>
+    <div id="qs-qrbox" style="display:none;margin-top:14px">
+      <img id="qs-qrimg" alt="汽水音乐登录二维码"
+           style="width:190px;height:190px;background:#fff;border-radius:10px;padding:6px;display:block">
+      <div id="qs-qrmsg" class="hint" style="margin-top:8px">用抖音 App 扫码…</div>
+    </div>
+    <div id="qs-msg" style="font-size:13px;min-height:20px;margin-top:6px"></div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let playlists = [];
+
+// 用 /tools?key=<ADMIN_PAGE_TOKEN> 进来时，页面里的接口也要带口令，
+// 否则「应急入口」打开是一片 401
+const PAGE_KEY = new URLSearchParams(location.search).get('key') || '';
+
+async function api(path, opts) {
+  if (PAGE_KEY) path += (path.indexOf('?') >= 0 ? '&' : '?') + 'key=' + encodeURIComponent(PAGE_KEY);
+  const r = await fetch(path, Object.assign({credentials:'same-origin', cache:'no-store'}, opts || {}));
+  let data = null;
+  try { data = await r.json(); } catch (e) {}
+  return {status: r.status, data};
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function render() {
+  const box = $('list');
+  if (!playlists.length) {
+    box.innerHTML = '<div class="empty">还没有歌单。先回播放器建一个，或在下面导入。</div>';
+    return;
+  }
+  const rows = playlists.map(p => {
+    const n = (p.songs || []).length;
+    const id = esc(p.id);
+    return '<tr><td>' + esc(p.name) + '</td>' +
+      '<td class="num">' + n + ' 首</td>' +
+      '<td style="text-align:right">' +
+        '<a class="btn" href="/api/user/playlists/export?id=' + encodeURIComponent(p.id) + '&format=m3u">m3u</a> ' +
+        '<a class="btn" href="/api/user/playlists/export?id=' + encodeURIComponent(p.id) + '&format=txt">txt</a>' +
+      '</td></tr>';
+  }).join('');
+  box.innerHTML = '<table><thead><tr><th>歌单</th><th>数量</th><th></th></tr></thead><tbody>' +
+    rows + '</tbody></table>';
+
+  const sel = $('target');
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">＋ 新建歌单</option>' +
+    playlists.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '（' + (p.songs || []).length + ' 首）</option>').join('');
+  if (keep && playlists.some(p => p.id === keep)) sel.value = keep;
+}
+
+async function load() {
+  const {status, data} = await api('/api/user/playlists');
+  if (status === 401) {
+    $('list').innerHTML = '<div class="empty">未登录。<a href="/">先回播放器登录</a> 再刷新本页。</div>';
+    return;
+  }
+  playlists = Array.isArray(data) ? data : [];
+  render();
+}
+
+$('target').addEventListener('change', () => {
+  $('name-wrap').style.display = $('target').value ? 'none' : '';
+});
+
+$('go').addEventListener('click', async () => {
+  const msg = $('msg');
+  const src = $('src').value.trim();
+  if (!src) { msg.className = 'bad'; msg.textContent = '先粘贴歌单链接或 ID'; return; }
+
+  const btn = $('go');
+  btn.disabled = true; btn.textContent = '导入中…';
+  msg.className = ''; msg.textContent = '正在从网易云拉取歌单，几百首可能需要十几秒…';
+
+  const body = {
+    url: src,
+    target_id: $('target').value,
+    target_name: $('newname').value.trim(),
+    limit: parseInt($('limit').value, 10) || 200,
+    auto_sync: $('autosync').checked
+  };
+
+  const {status, data} = await api('/api/user/playlists/import-netease', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+
+  btn.disabled = false; btn.textContent = '开始导入';
+
+  if (status !== 200 || !data || !data.success) {
+    msg.className = 'bad';
+    msg.textContent = '导入失败：' + ((data && data.message) || ('HTTP ' + status));
+    return;
+  }
+  msg.className = 'ok';
+  msg.textContent = '已导入《' + (data.source_name || '') + '》：新增 ' + data.added +
+    ' 首，跳过重复 ' + data.skipped + ' 首（原歌单共 ' + data.total + ' 首）' +
+    (data.auto_sync ? ' · 已开启每天自动同步' : '');
+  $('src').value = '';
+  await load();
+  await loadSyncJobs();
+});
+
+/* ---------- 自动同步任务 ---------- */
+
+let syncs = [];
+
+async function loadSyncJobs() {
+  const box = $('sync-list');
+  const {status, data} = await api('/api/user/playlists/sync-jobs');
+  if (status === 401) { box.innerHTML = '<div class="empty">未登录。</div>'; return; }
+  if (status !== 200 || !data) { box.innerHTML = '<div class="empty">读取失败</div>'; return; }
+
+  syncs = data.jobs || [];
+  if (data.hour != null) {
+    const hh = String(data.hour).padStart(2, '0') + ':00';
+    $('sync-hint').innerHTML = '每天 <code>' + hh + '</code> 把源歌单的新歌补进本地歌单；服务重启后会补跑一次。'
+      + (data.enabled === false ? ' <span style="color:#ff5c5c">当前已全局关闭（SYNC_ENABLED=0）</span>' : '');
+  }
+  if (!syncs.length) {
+    box.innerHTML = '<div class="empty">还没有自动同步任务。导入歌单时勾上「每天自动同步」就会出现在这里。</div>';
+    return;
+  }
+
+  const rows = syncs.map(j => {
+    const bad = !!j.last_err;
+    const st = !j.enabled
+      ? '<span class="tag off">已暂停</span>'
+      : (bad ? '<span class="tag bad">' + esc(j.last_err) + '</span>' : '<span class="tag ok">正常</span>');
+    return '<tr>'
+      + '<td>' + esc(j.playlist_name || '（已删除）') + '<div class="sub2">' + (j.songs ?? 0) + ' 首</div></td>'
+      + '<td>' + esc(j.source_name || j.netease_id) + '<div class="sub2">ID ' + esc(j.netease_id) + '</div></td>'
+      + '<td>' + st + '</td>'
+      + '<td class="num">' + esc(j.last_at || '未同步') + '</td>'
+      + '<td class="num">' + (j.last_added ?? 0) + '</td>'
+      + '<td class="num">' + (j.added ?? 0) + '</td>'
+      + '<td style="text-align:right;white-space:nowrap">'
+      +   '<button class="btn" data-act="run" data-id="' + esc(j.job_id) + '">立即同步</button> '
+      +   '<button class="btn" data-act="toggle" data-id="' + esc(j.job_id) + '" data-on="' + (j.enabled ? '1' : '0') + '">'
+      +     (j.enabled ? '暂停' : '恢复') + '</button> '
+      +   '<button class="btn" data-act="del" data-id="' + esc(j.job_id) + '">取消</button>'
+      + '</td></tr>';
+  }).join('');
+
+  box.innerHTML = '<table><thead><tr><th>本地歌单</th><th>源歌单</th><th>状态</th><th>上次同步</th>'
+    + '<th>上次新增</th><th>累计新增</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+$('sync-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = btn.getAttribute('data-id');
+  const act = btn.getAttribute('data-act');
+
+  if (act === 'run') {
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = '同步中…';
+    const {status, data} = await api('/api/user/playlists/sync-run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({job_id: id})
+    });
+    btn.disabled = false; btn.textContent = old;
+    if (status === 200 && data && data.success) {
+      const r = (data.results || [])[0] || {};
+      alert(r.error ? ('同步失败：' + r.error) : ('同步完成：本次新增 ' + (r.added ?? 0) + ' 首，跳过已有 ' + (r.skipped ?? 0) + ' 首'));
+      await load();
+      await loadSyncJobs();
+    } else {
+      alert('同步失败：' + ((data && data.message) || ('HTTP ' + status)));
+    }
+    return;
+  }
+
+  if (act === 'toggle') {
+    const enable = btn.getAttribute('data-on') !== '1';
+    const {status} = await api('/api/user/playlists/sync-toggle', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({job_id: id, enabled: enable})
+    });
+    if (status !== 200) { alert('操作失败'); return; }
+    await loadSyncJobs();
+    return;
+  }
+
+  if (act === 'del') {
+    if (!confirm('取消这条自动同步？已经导入的歌不会删除。')) return;
+    const {status} = await api('/api/user/playlists/sync-delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({job_id: id})
+    });
+    if (status !== 200) { alert('操作失败'); return; }
+    await loadSyncJobs();
+  }
+});
+
+$('name-wrap').style.display = '';
+load();
+loadSyncJobs();
+
+/* ---------- 外部音源（mp3api / YouTube） ---------- */
+async function loadExtSettings() {
+  const box = $('ext-state');
+  const {status, data} = await api('/api/settings/ext');
+  if (status === 401) { box.innerHTML = '<span class="tag bad">未登录</span> 请先回播放器登录。'; return; }
+  if (status !== 200 || !data) { box.textContent = '读取失败（HTTP ' + status + '）'; return; }
+  if (!data.configured) {
+    box.innerHTML = '<span class="tag bad">未配置</span> 外部源当前关闭：搜索只走国内音源，被禁的歌只剩翻唱/DJ 版。';
+    return;
+  }
+  const from = data.from === 'env' ? '环境变量' : '页面设置';
+  const off = data.enabled ? '' : ' · <span class="tag off">已被 MUSIC_SOURCES 关闭</span>';
+  box.innerHTML = '<span class="tag ok">已配置</span> <code>' + esc(data.masked) + '</code> · 来源：' + from + off +
+    '<div class="sub2">' + esc(data.base || '') + (data.first ? ' · 已设为最优先' : '') + '</div>';
+}
+
+$('ext-save').addEventListener('click', async () => {
+  const btn = $('ext-save');
+  const key = $('ext-key').value.trim();
+  const msg = $('ext-msg');
+  btn.disabled = true; btn.textContent = '保存中…';
+  const {status, data} = await api('/api/settings/ext', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mp3api_key: key})
+  });
+  btn.disabled = false; btn.textContent = '保存';
+  if (status === 200 && data && data.success) {
+    msg.className = 'ok';
+    msg.textContent = key ? '已保存，立即生效（不用重启）' : '已清除，外部源关闭';
+    $('ext-key').value = '';
+    await loadExtSettings();
+  } else {
+    msg.className = 'bad';
+    msg.textContent = (data && data.message) || ('保存失败：HTTP ' + status);
+  }
+});
+
+$('ext-test').addEventListener('click', async () => {
+  const btn = $('ext-test');
+  const msg = $('ext-msg');
+  btn.disabled = true; btn.textContent = '测试中…';
+  const {status, data} = await api('/api/settings/ext/test', {method: 'POST'});
+  btn.disabled = false; btn.textContent = '测试连接';
+  if (status !== 200 || !data) {
+    msg.className = 'bad'; msg.textContent = '测试失败：HTTP ' + status;
+    return;
+  }
+  msg.className = data.success ? 'ok' : 'bad';
+  msg.textContent = (data.success ? '✅ ' : '❌ ') + data.message +
+    (data.ms ? '（' + data.ms + ' ms）' : '');
+});
+
+loadExtSettings();
+
+/* ---------- 歌词源 LrcAPI ---------- */
+
+async function loadLyricSettings() {
+  const box = $('lr-state');
+  const {status, data} = await api('/api/settings/lyric');
+  if (status === 401) { box.innerHTML = '<span class="tag bad">未登录</span> 请先回播放器登录。'; return; }
+  if (status !== 200 || !data) { box.textContent = '读取失败（HTTP ' + status + '）'; return; }
+
+  const from = data.from === 'env' ? '环境变量' : (data.from === 'file' ? '页面设置' : '默认公共实例');
+  const off = data.enabled ? '' : ' · <span class="tag bad">已关闭（LRCAPI_ENABLED=0）</span>';
+  const auth = data.auth_configured ? ' · 鉴权 ' + esc(data.auth_masked) : ' · 无鉴权';
+  box.innerHTML = '<span class="tag ok">已启用</span> <code>' + esc(data.base) + '</code> · 来源：' + from + auth + off;
+
+  if (document.activeElement !== $('lr-base')) $('lr-base').value = data.from === 'default' ? '' : (data.base || '');
+  if (!data.can_edit) {
+    $('lr-save').disabled = true;
+    $('lr-save').title = '只有站长（最早注册的账号）能改接口地址';
+    $('lr-base').disabled = true;
+    $('lr-auth').disabled = true;
+    $('lr-save').textContent = '仅站长可改';
+  }
+}
+
+$('lr-save').addEventListener('click', async () => {
+  const btn = $('lr-save');
+  const msg = $('lr-msg');
+  btn.disabled = true; btn.textContent = '保存中…';
+  const {status, data} = await api('/api/settings/lyric', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({base: $('lr-base').value.trim(), auth: $('lr-auth').value.trim()})
+  });
+  btn.disabled = false; btn.textContent = '保存';
+  if (status === 200 && data && data.success) {
+    msg.className = 'ok';
+    msg.textContent = '已保存，立即生效（' + data.base + '）';
+    $('lr-auth').value = '';
+    await loadLyricSettings();
+  } else {
+    msg.className = 'bad';
+    msg.textContent = (data && data.message) || ('保存失败：HTTP ' + status);
+  }
+});
+
+$('lr-test').addEventListener('click', async () => {
+  const btn = $('lr-test');
+  const msg = $('lr-msg');
+  btn.disabled = true; btn.textContent = '测试中…';
+  const {status, data} = await api('/api/settings/lyric/test', {method: 'POST'});
+  btn.disabled = false; btn.textContent = '测试连接';
+  if (status !== 200 || !data) {
+    msg.className = 'bad'; msg.textContent = '测试失败：HTTP ' + status;
+    return;
+  }
+  msg.className = data.success ? 'ok' : 'bad';
+  msg.textContent = (data.success ? '✅ ' : '❌ ') + data.message +
+    (data.ms ? '（' + data.ms + ' ms）' : '') +
+    (data.success && data.sample ? '：' + data.sample : '');
+});
+
+loadLyricSettings();
+
+/* ---------- 汽水音乐（扫码登录） ---------- */
+let qsTimer = null;
+
+async function loadQishui() {
+  const box = $('qs-state');
+  const {status, data} = await api('/api/qishui/status');
+  if (status !== 200 || !data) {
+    box.innerHTML = '<span class="tag bad">读取失败</span>';
+    return;
+  }
+  if (!data.enabled) {
+    box.innerHTML = '<span class="tag off">已关闭</span> 环境变量 QISHUI_ENABLED=0';
+    return;
+  }
+  if (!data.reachable) {
+    box.innerHTML = '<span class="tag bad">连不上</span> 检查 <code>gomusic</code> 容器是否在跑（' +
+      esc(data.base) + '）';
+    return;
+  }
+  if (data.usable === false) {
+    box.innerHTML = '<span class="tag bad">不可用</span> ' + esc(data.reason || '汽水当前不可用') +
+      '<br><span class="hint">二维码能扫、手机上也能点确认，但服务器换 ticket 的请求会被拦，所以登录会一直停在 scanned。</span>';
+    $('qs-qr').disabled = true;
+    return;
+  }
+  $('qs-qr').disabled = false;
+  box.innerHTML = data.logged_in
+    ? '<span class="tag ok">已登录</span> cookie <code>' + esc(data.cookie) + '</code>'
+    : '<span class="tag off">未登录</span> 只能搜榜单歌 + 60 秒试听，扫下面二维码解锁完整版';
+}
+
+$('qs-refresh').addEventListener('click', loadQishui);
+
+$('qs-qr').addEventListener('click', async () => {
+  const btn = $('qs-qr');
+  const msg = $('qs-msg');
+  btn.disabled = true; btn.textContent = '生成中…';
+  const {status, data} = await api('/api/qishui/qr', {method: 'POST'});
+  btn.disabled = false; btn.textContent = '生成登录二维码';
+  if (status !== 200 || !data || !data.key || !data.image) {
+    msg.className = 'bad';
+    msg.textContent = '生成失败：' + (data && data.message ? data.message : 'HTTP ' + status);
+    return;
+  }
+  msg.className = '';
+  msg.textContent = '';
+  $('qs-qrbox').style.display = 'block';
+  $('qs-qrimg').src = data.image;
+  $('qs-qrmsg').textContent = '用抖音 App 扫码（汽水 App 可能扫不过），扫完这里会自动更新';
+
+  if (qsTimer) clearInterval(qsTimer);
+  qsTimer = setInterval(async () => {
+    const r = await api('/api/qishui/qr?key=' + encodeURIComponent(data.key));
+    const st = String((r.data && r.data.status) || '');
+    if (!st || /wait|pending|scan|0/i.test(st)) return;
+    // 只要不再是「等待」，就去查真实登录态（status 字段各版本含义不一致）
+    const s = await api('/api/qishui/status');
+    if (s.data && s.data.logged_in) {
+      clearInterval(qsTimer);
+      qsTimer = null;
+      $('qs-qrmsg').textContent = '登录成功 ✅ 汽水源已解锁完整播放';
+      $('qs-qrbox').style.display = 'none';
+      loadQishui();
+    }
+  }, 2500);
+});
+
+loadQishui();
+</script>
+</body>
+</html>

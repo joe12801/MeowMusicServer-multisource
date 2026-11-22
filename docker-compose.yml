@@ -33,3 +33,17 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+  # 歌词源：LrcAPI（Apple Music 逐字歌词 + 酷狗聚合）
+  # 只在容器网络内可达，不映射宿主机端口；主服务用 http://lrcapi:28883 访问
+  lrcapi:
+    image: ${LRCAPI_IMAGE:-hisatri/lrcapi:1.5.2}
+    container_name: lrcapi
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"

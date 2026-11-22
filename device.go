@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -38,6 +39,8 @@ type DeviceManager struct {
 	bindingCodes map[string]*BindingCode // Code -> BindingCode
 	tokens       map[string]string       // Token -> MAC
 	mu           sync.RWMutex
+	saveMu       sync.Mutex // 串行化落盘，避免两个请求同时 rename
+	lastSavedAt  time.Time
 	filePath     string
 }
 
@@ -188,15 +191,25 @@ func (dm *DeviceManager) GetDeviceByMAC(mac string) (*Device, error) {
 	return device, nil
 }
 
-// UpdateLastSeen 更新设备最后在线时间
+// UpdateLastSeen 更新设备最后在线时间。
+//
+// ESP32 每次拉歌单/心跳都会走到这里，旧实现每次都整份重写 devices.json，
+// 等于拿 NAS 的盘在磨。现在最多每 60 秒落盘一次，内存里的时间戳照常更新。
 func (dm *DeviceManager) UpdateLastSeen(mac string) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
-	if device, exists := dm.devices[mac]; exists {
-		device.LastSeen = time.Now()
-		dm.SaveToFile()
+	device, exists := dm.devices[mac]
+	if !exists {
+		return
 	}
+	now := time.Now()
+	device.LastSeen = now
+	if now.Sub(dm.lastSavedAt) < 60*time.Second {
+		return
+	}
+	dm.lastSavedAt = now
+	dm.SaveToFile()
 }
 
 // DirectBindDevice 直接绑定设备（不需要绑定码）
@@ -281,7 +294,9 @@ func (dm *DeviceManager) GetUserDevices(username string) []*Device {
 	return devices
 }
 
-// SaveToFile 保存设备信息到文件
+// SaveToFile 保存设备信息到文件。
+// 调用方都持有 dm.mu 写锁；这里用 saveMu 串行化落盘并用原子写替换，
+// 权限收紧到 0600（文件里有设备 token，不能被同机其他用户读到）。
 func (dm *DeviceManager) SaveToFile() error {
 	data := struct {
 		Devices map[string]*Device `json:"devices"`
@@ -295,12 +310,13 @@ func (dm *DeviceManager) SaveToFile() error {
 		return err
 	}
 
-	err = os.WriteFile(dm.filePath, jsonData, 0644)
-	if err != nil {
+	dm.saveMu.Lock()
+	defer dm.saveMu.Unlock()
+
+	if err := writeFileAtomic(dm.filePath, jsonData, 0o600); err != nil {
 		fmt.Println("[Error] Failed to write devices.json:", err)
 		return err
 	}
-
 	return nil
 }
 
@@ -689,10 +705,36 @@ func UnbindDeviceHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// deviceSyncAuthorized 判断 /api/esp32/sync 是否可以返回设备 token。
+//
+// 这个接口只凭一个 MAC 就换 token，而 MAC 是局域网内广播可见的，
+// 对公网开放等于谁都能拿到别人的设备凭证。
+// 默认只允许内网来源（ESP32 与服务器同一局域网时完全不受影响）；
+// 跨网使用可设置 DEVICE_SYNC_KEY，并让设备带上 X-Device-Sync-Key 请求头；
+// 实在需要全放开再设 DEVICE_SYNC_ALLOW_PUBLIC=1（不推荐）。
+func deviceSyncAuthorized(r *http.Request) bool {
+	if os.Getenv("DEVICE_SYNC_ALLOW_PUBLIC") == "1" {
+		return true
+	}
+	if key := os.Getenv("DEVICE_SYNC_KEY"); key != "" {
+		if r.Header.Get("X-Device-Sync-Key") == key {
+			return true
+		}
+	}
+	ip := net.ParseIP(clientIP(r))
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
+}
+
 // SyncDeviceHandler ESP32用MAC地址同步Token（用于网页端绑定后自动获取token）
 func SyncDeviceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !deviceSyncAuthorized(r) {
+		fmt.Printf("[Device] sync rejected from %s (非内网来源且未带有效 key)\n", clientIP(r))
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 

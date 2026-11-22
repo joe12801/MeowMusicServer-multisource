@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -129,38 +128,23 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If still not found, attempt to retrieve from cache file
+	// If still not found, 看本地转码缓存里有没有这首歌。
+	// 旧实现 glob 的是 ./cache/*.json（实际缓存在 ./files/cache），
+	// 还把 JSON 文件当目录读，永远命中不了，是纯死代码。
+	// 现在直接查真实的缓存音频文件，命中就给静态地址，省一次取链+转码。
 	if !found {
-		fmt.Println("[Info] Reading music from cache.")
-		// Fuzzy matching for singer and song
-		files, err := filepath.Glob("./cache/*.json")
-		if err != nil {
-			fmt.Println("[Error] Error reading cache directory:", err)
-			return
-		}
-		for _, file := range files {
-			if strings.Contains(filepath.Base(file), song) && (singer == "" || strings.Contains(filepath.Base(file), singer)) {
-				musicItem, found = readFromCache(file)
-				if found {
-					if musicItem.AudioURL != "" {
-						musicItem.AudioURL = scheme + "://" + r.Host + musicItem.AudioURL
-					}
-					if musicItem.AudioFullURL != "" {
-						musicItem.AudioFullURL = scheme + "://" + r.Host + musicItem.AudioFullURL
-					}
-					if musicItem.M3U8URL != "" {
-						musicItem.M3U8URL = scheme + "://" + r.Host + musicItem.M3U8URL
-					}
-					if musicItem.LyricURL != "" {
-						musicItem.LyricURL = scheme + "://" + r.Host + musicItem.LyricURL
-					}
-					if musicItem.CoverURL != "" {
-						musicItem.CoverURL = scheme + "://" + r.Host + musicItem.CoverURL
-					}
-					musicItem.FromCache = true
-					break
-				}
+		if _, statErr := os.Stat(musicCacheFile(song, singer)); statErr == nil {
+			fmt.Println("[Info] Reading music from local transcode cache.")
+			rel := "/cache/music/" + url.PathEscape(cacheDirName(singer, song)) + "/music.mp3"
+			abs := scheme + "://" + r.Host + rel
+			musicItem = MusicItem{
+				Title:        song,
+				Artist:       singer,
+				AudioURL:     abs,
+				AudioFullURL: abs,
+				FromCache:    true,
 			}
+			found = true
 		}
 	}
 
@@ -220,19 +204,43 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 游客试听额度：只对「从头开始的那次请求」检查和计数。
+	// 拖动进度条、断线续传的 Range 请求不算新的一首，也不会被半路截断。
+	if countsAsNewPlay(r) && isGuestRequest(r) {
+		if _, gerr := checkGuestQuota(r); gerr != nil {
+			fmt.Printf("[Stream Live] 游客额度用尽（%s）：%v\n", clientIP(r), gerr)
+			w.Header().Set("Retry-After", "3600")
+			w.Header().Set("X-Guest-Quota", "exhausted")
+			http.Error(w, gerr.Error(), http.StatusTooManyRequests)
+			return
+		}
+		noteGuestPlay(r)
+	}
+
 	// 缓存路径：./files/cache/music/<singer>-<song>/music.mp3
 	cachedFile := musicCacheFile(song, singer)
 
 	// 1. 缓存命中：定长返回（带 Content-Length，设备按长度读完即结束）
 	if _, err := os.Stat(cachedFile); err == nil {
 		fmt.Printf("[Stream Live] Serving from cache: %s\n", cachedFile)
-		if err := serveCachedAudio(w, cachedFile); err != nil {
+		// 老缓存没有 meta.json：顺手量一次时长，之后搜索能补上 duration
+		if _, ok := readCacheMeta(cachedFile); !ok {
+			go backfillCacheDuration(cachedFile)
+		}
+		if err := serveCachedAudio(w, r, cachedFile); err != nil {
 			fmt.Printf("[Stream Live] Serve cache error: %v\n", err)
 		}
 		return
 	}
 
-	// 2. 缓存不存在：获取远程URL → 完整转码落盘 → 定长返回
+	// 2. 缓存不存在：先查每日额度，超了直接 429，不启动 ffmpeg
+	if err := checkTranscodeQuota(r); err != nil {
+		fmt.Printf("[Stream Live] 额度不足: %v\n", err)
+		w.Header().Set("Retry-After", "3600")
+		http.Error(w, err.Error(), http.StatusTooManyRequests)
+		return
+	}
+
 	fmt.Printf("[Stream Live] Cache miss, fetching from API...\n")
 
 	remoteURL := getRemoteMusicURLOnly(song, singer)
@@ -250,8 +258,13 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 转码成功才记账（命中缓存不算额度，重复听同一首不会消耗）
+	if info, err := os.Stat(cachedFile); err == nil {
+		noteTranscode(r, info.Size())
+	}
+
 	// 定长返回给设备
-	if err := serveCachedAudio(w, cachedFile); err != nil {
+	if err := serveCachedAudio(w, r, cachedFile); err != nil {
 		fmt.Printf("[Stream Live] Serve error: %v\n", err)
 	}
 }

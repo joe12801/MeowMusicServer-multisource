@@ -91,7 +91,7 @@ func (pm *PlaylistManager) saveToFile() error {
 		return err
 	}
 
-	return os.WriteFile(pm.filePath, data, 0644)
+	return writeFileAtomic(pm.filePath, data, 0o600)
 }
 
 // AddToPlaylist adds a song to a playlist
@@ -473,7 +473,43 @@ func HandleGetFavorites(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(playlist.Songs)
 }
 
+// resolveUserID 解析当前请求所属用户（设备 token / 登录 token / 会话 cookie）。
+// 未登录返回空字符串。
+func resolveUserID(r *http.Request) string {
+	if deviceToken := r.Header.Get("X-Device-Token"); deviceToken != "" {
+		if device, err := GetDeviceManager().VerifyToken(deviceToken); err == nil {
+			if id := userStore.GetUserIDByUsername(device.Username); id != "" {
+				return id
+			}
+		}
+	}
+	if token := r.Header.Get("Authorization"); token != "" {
+		token = strings.TrimPrefix(token, "Bearer ")
+		if user, err := userStore.GetUserByToken(token); err == nil {
+			return user.ID
+		}
+	}
+	if cookie, err := r.Cookie("session_token"); err == nil {
+		if user, err := userStore.GetUserByToken(cookie.Value); err == nil {
+			return user.ID
+		}
+	}
+	return ""
+}
+
+func songInList(list []MusicItem, title, artist string) bool {
+	for _, song := range list {
+		if song.Title == title && song.Artist == artist {
+			return true
+		}
+	}
+	return false
+}
+
 // HandleCheckFavorite checks if a song is in favorites
+//
+// 旧实现只查全局 favorite 歌单，但登录用户的收藏其实存在自己的
+// 「我喜欢」里，导致 Web 端「已收藏」永远显示未收藏。
 func HandleCheckFavorite(w http.ResponseWriter, r *http.Request) {
 	title := r.URL.Query().Get("title")
 	artist := r.URL.Query().Get("artist")
@@ -483,26 +519,20 @@ func HandleCheckFavorite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	playlist, err := playlistManager.GetPlaylist("favorite")
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]bool{"is_favorite": false})
-		return
-	}
+	isFavorite := false
 
-	for _, song := range playlist.Songs {
-		if song.Title == title && song.Artist == artist {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]bool{"is_favorite": true})
-			return
+	if userID := resolveUserID(r); userID != "" {
+		playlists := playlistManager.GetUserPlaylists(userID)
+		if len(playlists) > 0 && songInList(playlists[0].Songs, title, artist) {
+			isFavorite = true
 		}
+	} else if playlist, err := playlistManager.GetPlaylist("favorite"); err == nil {
+		isFavorite = songInList(playlist.Songs, title, artist)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]bool{"is_favorite": false})
+	json.NewEncoder(w).Encode(map[string]bool{"is_favorite": isFavorite})
 }
 
 // User Playlist Management Functions
@@ -531,7 +561,7 @@ func (pm *PlaylistManager) saveUserPlaylists() error {
 		return err
 	}
 
-	return os.WriteFile(pm.userFilePath, data, 0644)
+	return writeFileAtomic(pm.userFilePath, data, 0o600)
 }
 
 // InitializeUserPlaylists creates default playlists for a new user
@@ -635,6 +665,49 @@ func (pm *PlaylistManager) AddSongToUserPlaylist(userID, playlistID string, song
 	}
 
 	return fmt.Errorf("playlist not found")
+}
+
+// AddSongsToUserPlaylist 批量添加（歌单导入用）。
+// 逐条调 AddSongToUserPlaylist 会每首都写一次文件（100 首 = 100 次 fsync），
+// 这里一次加锁、一次落盘，并保持导入顺序。
+func (pm *PlaylistManager) AddSongsToUserPlaylist(userID, playlistID string, songs []MusicItem) (added, skipped int, err error) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	playlists, exists := pm.UserPlaylists[userID]
+	if !exists {
+		return 0, 0, fmt.Errorf("no playlists found for user")
+	}
+
+	for _, playlist := range playlists {
+		if playlist.ID != playlistID {
+			continue
+		}
+
+		seen := make(map[string]bool, len(playlist.Songs)+len(songs))
+		for _, s := range playlist.Songs {
+			seen[musicDedupeKey(s.Title, s.Artist)] = true
+		}
+		for _, s := range songs {
+			key := musicDedupeKey(s.Title, s.Artist)
+			if seen[key] {
+				skipped++
+				continue
+			}
+			seen[key] = true
+			playlist.Songs = append(playlist.Songs, s)
+			added++
+		}
+		playlist.UpdatedAt = time.Now()
+		return added, skipped, pm.saveUserPlaylists()
+	}
+
+	return 0, 0, fmt.Errorf("playlist not found")
+}
+
+// musicDedupeKey 判重用的键：歌名 + 歌手，忽略大小写与首尾空格。
+func musicDedupeKey(title, artist string) string {
+	return toLower(strings.TrimSpace(title)) + "\x00" + toLower(strings.TrimSpace(artist))
 }
 
 // RemoveSongFromUserPlaylist removes a song from a user's playlist
@@ -869,6 +942,9 @@ func HandleDeleteUserPlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Printf("[Info] User %s deleted playlist %s\n", userID, playlistID)
+
+	// 歌单没了，挂在它上面的自动同步关系也一起清掉，免得每天报「歌单不存在」
+	removeJobsForPlaylist(userID, playlistID)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{

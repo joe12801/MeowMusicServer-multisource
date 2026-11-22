@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>需要登录 · Meow Music</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --text:#e6e9ef; --muted:#8b93a7; --accent:#4ea1ff; --bad:#ff5c5c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:var(--bg);color:var(--text);padding:24px;
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .box{width:100%;max-width:360px;background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;padding:24px}
+  h1{font-size:16px;margin:0 0 4px;font-weight:600}
+  .sub{color:var(--muted);font-size:12px;margin-bottom:18px}
+  label{display:block;font-size:12px;color:var(--muted);margin:12px 0 6px}
+  input{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+    color:var(--text);padding:10px 12px;font-size:14px;outline:none}
+  input:focus{border-color:var(--accent)}
+  button{width:100%;margin-top:18px;background:rgba(78,161,255,.16);border:1px solid rgba(78,161,255,.5);
+    border-radius:10px;color:var(--text);padding:11px;font-size:14px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button:disabled{opacity:.55;cursor:default}
+  #msg{margin-top:12px;font-size:12px;color:var(--bad);min-height:18px}
+  .tips{margin-top:16px;color:var(--muted);font-size:11px;line-height:1.8}
+  code{background:var(--panel2);padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>这个页面需要登录</h1>
+  <div class="sub" id="where"></div>
+
+  <form id="f" autocomplete="on">
+    <label for="u">用户名</label>
+    <input id="u" name="username" autocomplete="username" required>
+    <label for="p">密码</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    <button id="b" type="submit">登录并继续</button>
+  </form>
+  <div id="msg"></div>
+
+  <div class="tips">
+    登录成功后会自动回到刚才要打开的页面。<br>
+    没有账号？先在播放器首页注册。<br>
+    服务器设了 <code>ADMIN_PAGE_TOKEN</code> 时，也可用 <code>?key=口令</code> 直接进入。
+  </div>
+</div>
+
+<script>
+(function () {
+  document.getElementById('where').textContent = location.pathname;
+
+  var form = document.getElementById('f');
+  var msg = document.getElementById('msg');
+  var btn = document.getElementById('b');
+
+  function enter() { location.replace(location.pathname); }
+
+  // 播放器里已经登录过（token 在 localStorage）：直接换成 Cookie，省一次输密码
+  var saved = '';
+  try { saved = localStorage.getItem('token') || ''; } catch (e) {}
+  if (saved) {
+    msg.style.color = 'var(--muted)';
+    msg.textContent = '正在使用已有登录态…';
+    fetch('/api/auth/cookie', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + saved },
+      credentials: 'same-origin'
+    }).then(function (res) {
+      if (res.ok) { enter(); return; }
+      msg.style.color = 'var(--bad)';
+      msg.textContent = '';
+    }).catch(function () {
+      msg.style.color = 'var(--bad)';
+      msg.textContent = '';
+    });
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    msg.textContent = '';
+    btn.disabled = true;
+    btn.textContent = '登录中…';
+
+    fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        username: document.getElementById('u').value.trim(),
+        password: document.getElementById('p').value
+      })
+    }).then(function (res) {
+      if (!res.ok) {
+        return res.text().then(function (t) { throw new Error(t || ('HTTP ' + res.status)); });
+      }
+      // 服务端已写入 HttpOnly Cookie；顺手把 token 交给播放器页用
+      return res.json().then(function (data) {
+        try {
+          if (data && data.token) localStorage.setItem('token', data.token);
+          if (data && data.user) localStorage.setItem('user', JSON.stringify(data.user));
+        } catch (e) {}
+        enter();
+      });
+    }).catch(function (err) {
+      msg.textContent = '登录失败：' + (err.message || '请检查用户名或密码');
+      btn.disabled = false;
+      btn.textContent = '登录并继续';
+    });
+  });
+})();
+</script>
+</body>
+</html>

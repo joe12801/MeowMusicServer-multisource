@@ -278,48 +278,49 @@ func requestAndCacheMusic(song, singer string) MusicItem {
 	if first && srcEnabled("mp3api") {
 		mp3ApiTried = true
 		fmt.Printf("[Source] mp3api 临时前置优先\n")
-		if item := MP3ApiSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+		if item := trySource("mp3api-first", func() MusicItem { return MP3ApiSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
 			return item
 		}
 	}
 
 	// ---- 前段：只要真原唱 ----
+	// 每个源都过 trySource，顺带记录成功率/耗时给 /api/sources 面板用。
 	if srcEnabled("kuwo") {
-		if item := KuwoSearchStrict(song, singer); item.Title != "" && item.AudioURL != "" {
+		if item := trySource("kuwo-strict", func() MusicItem { return KuwoSearchStrict(song, singer) }); item.Title != "" && item.AudioURL != "" {
 			return item
 		}
 	}
 	if srcEnabled("netease") {
-		if item := NeteaseSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+		if item := trySource("netease-strict", func() MusicItem { return NeteaseSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
 			return item
 		}
 	}
 	// 小枫 xfabe：与网易云同曲库，但能代取 VIP 曲的直链（限流时会自己闭嘴）
 	if srcEnabled("xfabe") {
-		if item := XfabeSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+		if item := trySource("xfabe", func() MusicItem { return XfabeSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
 			return item
 		}
 	}
 	if srcEnabled("qq") {
-		if item := QQMusicSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+		if item := trySource("qq", func() MusicItem { return QQMusicSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
 			return item
 		}
 	}
 	if srcEnabled("kugou") {
-		if item := KugouSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+		if item := trySource("kugou", func() MusicItem { return KugouSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
 			return item
 		}
 	}
 	// 本地网易云 API（带 UNM 解灰，能跨源补齐无版权歌曲）
 	if srcEnabled("netease") {
-		if item := NCMSearch(song, singer); item.Title != "" {
+		if item := trySource("netease-ncm", func() MusicItem { return NCMSearch(song, singer) }); item.Title != "" {
 			return item
 		}
 	}
 
 	// ---- 后段：宽容兜底 ----
 	if srcEnabled("kuwo") {
-		if item := KuwoSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+		if item := trySource("kuwo-loose", func() MusicItem { return KuwoSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
 			return item
 		}
 	}
@@ -329,7 +330,7 @@ func requestAndCacheMusic(song, singer string) MusicItem {
 	// 歌名对得上才立即返回；对不上就先记作兜底，继续往下找真原唱（mp3api / yuafeng）。
 	var gdFallback MusicItem
 	if srcEnabled("gdstudio") {
-		if item := GDStudioSearch(song, singer); item.Title != "" {
+		if item := trySource("gdstudio", func() MusicItem { return GDStudioSearch(song, singer) }); item.Title != "" {
 			if songTitleMatches(item.Title, song) {
 				return item
 			}
@@ -338,18 +339,30 @@ func requestAndCacheMusic(song, singer string) MusicItem {
 				item.Title, song)
 		}
 	}
+	// 汽水音乐（抖音曲库）：独家曲、下架曲常有。未登录只给 60 秒试听，
+	// 所以排在国内主源和 GDStudio 之后，且校验歌名，避免顶掉能放完整版的源。
+	if srcEnabled("qishui") {
+		if item := trySource("qishui", func() MusicItem { return QishuiSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
+			if songTitleMatches(item.Title, song) {
+				return item
+			}
+			fmt.Printf("[Source] 汽水返回的是 %q（与 %q 不符），继续往后找\n", item.Title, song)
+		}
+	}
 	// mp3.994938.xyz（yt-dlp 兜底）：YouTube 曲库关键词直搜取第一条，
 	// 国内/国外服务器都能直连（境外实测比境内还快）。首次冷启动 13s+，
 	// 上游缓存后秒回，故只放后段兜底。KEY 走 MUSIC_MP3API_KEY，未配置自动跳过。
 	if srcEnabled("mp3api") && !mp3ApiTried {
-		if item := MP3ApiSearch(song, singer); item.Title != "" && item.AudioURL != "" {
+		if item := trySource("mp3api", func() MusicItem { return MP3ApiSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
 			return item
 		}
 	}
 	// 最后兜底：yuafeng 免费接口
 	if srcEnabled("yuafeng") {
 		for _, source := range []string{"kuwo", "netease", "migu", "baidu"} {
-			if item := YuafengAPIResponseHandler(source, song, singer); item.Title != "" {
+			name := "yuafeng-" + source
+			src := source
+			if item := trySource(name, func() MusicItem { return YuafengAPIResponseHandler(src, song, singer) }); item.Title != "" {
 				return item
 			}
 		}

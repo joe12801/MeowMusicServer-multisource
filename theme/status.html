@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运行状态 · Meow Music</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --text:#e6e9ef; --muted:#8b93a7; --accent:#4ea1ff;
+    --ok:#35c46a; --warn:#f5a524; --bad:#ff5c5c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    padding:18px 22px;border-bottom:1px solid var(--line);background:var(--panel)}
+  h1{font-size:17px;margin:0;font-weight:600}
+  .sub{color:var(--muted);font-size:12px}
+  .grow{flex:1}
+  a.btn,button{background:var(--panel2);color:var(--text);border:1px solid var(--line);
+    border-radius:8px;padding:6px 12px;font-size:13px;text-decoration:none;cursor:pointer}
+  a.btn:hover,button:hover{border-color:var(--accent);color:#fff}
+  main{padding:18px 22px 40px;max-width:1180px;margin:0 auto}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .card .k{color:var(--muted);font-size:12px;letter-spacing:.02em}
+  .card .v{font-size:20px;font-weight:600;margin-top:4px;font-variant-numeric:tabular-nums}
+  .card .x{color:var(--muted);font-size:12px;margin-top:2px}
+  .sec-title{display:flex;align-items:center;gap:10px;margin:22px 0 10px}
+  .sec-title h2{font-size:14px;margin:0;font-weight:600}
+  .sec-title .hint{color:var(--muted);font-size:12px}
+  table{width:100%;border-collapse:collapse;background:var(--panel);
+    border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--muted);font-size:12px;font-weight:500;background:var(--panel2)}
+  tr:last-child td{border-bottom:none}
+  td.num{font-variant-numeric:tabular-nums}
+  .badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;border:1px solid transparent}
+  .b-ok{background:rgba(53,196,106,.14);color:var(--ok);border-color:rgba(53,196,106,.35)}
+  .b-warn{background:rgba(245,165,36,.14);color:var(--warn);border-color:rgba(245,165,36,.35)}
+  .b-bad{background:rgba(255,92,92,.14);color:var(--bad);border-color:rgba(255,92,92,.35)}
+  .b-off{background:rgba(139,147,167,.12);color:var(--muted);border-color:rgba(139,147,167,.3)}
+  .err{color:var(--bad);font-size:12px}
+  .empty{color:var(--muted);padding:16px}
+  .foot{color:var(--muted);font-size:12px;margin-top:18px}
+  .bar{height:4px;background:var(--panel2);border-radius:2px;overflow:hidden;margin-top:8px}
+  .bar > i{display:block;height:100%;background:var(--accent)}
+
+  /* 播放统计图表：纯 CSS 柱状，不引外部图表库 */
+  .chart{display:flex;align-items:flex-end;gap:6px;height:180px;padding:12px 14px;
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow-x:auto}
+  .chart .col{flex:1 0 20px;display:flex;flex-direction:column;align-items:center;gap:3px;height:100%;min-width:20px}
+  .chart .track{flex:1;width:100%;display:flex;align-items:flex-end}
+  .chart .bar{width:100%;position:relative;min-height:2px;border-radius:4px 4px 2px 2px;
+    background:linear-gradient(180deg,#4ea1ff,#2f6fb5)}
+  .chart .bar > i{position:absolute;left:0;right:0;bottom:0;display:block;
+    background:rgba(255,255,255,.28);border-radius:0 0 2px 2px}
+  .chart .col:hover .bar{background:linear-gradient(180deg,#7cc0ff,#3d86d6)}
+  .chart .lbl{font-size:10px;color:var(--muted);white-space:nowrap}
+  .chart .val{font-size:10px;color:var(--text);font-variant-numeric:tabular-nums}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-top:12px}
+  .panel-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .panel-card h3{font-size:13px;margin:0 0 10px;font-weight:600}
+  .rank{display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:7px}
+  .rank .nm{flex:0 0 46%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rank .track{flex:1;height:6px;background:var(--panel2);border-radius:3px;overflow:hidden}
+  .rank .track > i{display:block;height:100%;background:var(--accent);border-radius:3px}
+  .rank .ct{flex:0 0 36px;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+  .hourchart{display:flex;align-items:flex-end;gap:3px;height:76px}
+  .hourchart .h{flex:1;min-height:2px;border-radius:3px 3px 1px 1px;
+    background:linear-gradient(180deg,#4ea1ff,#2f6fb5)}
+  .hourlabels{display:flex;gap:3px;margin-top:4px;font-size:10px;color:var(--muted)}
+  .hourlabels span{flex:1;text-align:center;overflow:hidden}
+
+  /* 正在播放：/status 顶部一条，显示此刻谁在放哪首、放到哪里了 */
+  .nowbox{display:flex;flex-direction:column;gap:10px}
+  .nowcard{display:flex;align-items:flex-start;gap:14px;background:var(--panel);
+    border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .nowcard.live{border-color:rgba(53,196,106,.45);background:linear-gradient(180deg,rgba(53,196,106,.06),transparent 60%),var(--panel)}
+  .nowcard .cover{width:52px;height:52px;border-radius:8px;object-fit:cover;background:var(--panel2);flex:0 0 52px}
+  .nowcard .cover.ph{display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:22px}
+  .nowcard .info{flex:1;min-width:0}
+  .nowcard .t{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .nowcard .a{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+  .nowcard .meta{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+  .nowcard .prog{height:4px;background:var(--panel2);border-radius:2px;overflow:hidden;margin-top:8px}
+  .nowcard .prog > i{display:block;height:100%;background:var(--accent);border-radius:2px}
+  .nowcard.live .prog > i{background:var(--ok)}
+  .nowcard .dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:0 0 7px}
+  .nowcard.live .dot{background:var(--ok);box-shadow:0 0 0 3px rgba(53,196,106,.18)}
+  .nowcard .src{display:inline-flex;align-items:center;padding:1px 7px;border-radius:999px;
+    font-size:11px;border:1px solid transparent;white-space:nowrap}
+  .nowcard .who{color:var(--text)}
+  .nowcard .time{font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<header>
+  <h1>运行状态</h1>
+  <span class="sub" id="now">加载中…</span>
+  <span class="grow"></span>
+  <a class="btn" href="/">返回播放器</a>
+  <a class="btn" href="/remote">设备遥控</a>
+  <a class="btn" href="/tools">歌单工具</a>
+  <button id="btn-backup">立即备份</button>
+  <button id="refresh">立即刷新</button>
+</header>
+
+<main>
+  <div class="sec-title" style="margin-top:0">
+    <h2>正在播放</h2>
+    <span class="hint" id="now-hint">播放器每 8 秒心跳一次，45 秒没动静就当已暂停离开</span>
+  </div>
+  <div class="nowbox" id="now-box"><div class="empty">当前没有在放的歌</div></div>
+
+  <div class="cards">
+    <div class="card"><div class="k">缓存曲目</div><div class="v" id="c-files">-</div><div class="x" id="c-size">-</div></div>
+    <div class="card"><div class="k">缓存上限</div><div class="v" id="c-max">-</div><div class="x" id="c-ttl">-</div></div>
+    <div class="card"><div class="k">正在转码</div><div class="v" id="t-active">-</div><div class="x" id="t-meta">-</div></div>
+    <div class="card"><div class="k">今日转码</div><div class="v" id="q-songs">-</div><div class="x" id="q-meta">-</div></div>
+    <div class="card"><div class="k">磁盘可用</div><div class="v" id="d-free">-</div><div class="x" id="d-total">-</div></div>
+    <div class="card"><div class="k">运行时长</div><div class="v" id="uptime">-</div><div class="x" id="src-list">-</div></div>
+    <div class="card"><div class="k">最近备份</div><div class="v" id="b-when">-</div><div class="x" id="b-meta">-</div></div>
+    <div class="card"><div class="k">今日播放</div><div class="v" id="st-today">-</div><div class="x" id="st-today-x">-</div></div>
+    <div class="card"><div class="k">歌单自动同步</div><div class="v" id="sy-n">-</div><div class="x" id="sy-x">-</div></div>
+    <div class="card"><div class="k">游客试听</div><div class="v" id="g-limit">-</div><div class="x" id="g-x">-</div></div>
+  </div>
+
+  <div class="sec-title">
+    <h2>播放趋势</h2>
+    <span class="hint" id="st-hint">蓝色柱=播放首数，浅色部分是其中的转码</span>
+    <span class="grow" style="flex:1"></span>
+    <button id="st-range">切换 7 / 30 天</button>
+  </div>
+  <div class="chart" id="st-chart"><div class="empty">还没有播放记录</div></div>
+
+  <div class="grid2">
+    <div class="panel-card">
+      <h3>最常听的歌手</h3>
+      <div id="st-artists"><div class="empty">暂无数据</div></div>
+    </div>
+    <div class="panel-card">
+      <h3>最常听的歌</h3>
+      <div id="st-songs"><div class="empty">暂无数据</div></div>
+    </div>
+  </div>
+
+  <div class="panel-card" style="margin-top:12px">
+    <h3>时段分布（累计）</h3>
+    <div class="hourchart" id="st-hours"></div>
+    <div class="hourlabels" id="st-hourlabels"></div>
+  </div>
+
+  <div class="sec-title">
+    <h2>音源健康</h2>
+    <span class="hint">本次进程启动以来的实时统计，重启清零；点歌/搜索走过的源都会记录</span>
+  </div>
+  <table>
+    <thead>
+      <tr><th>音源</th><th>状态</th><th>成功</th><th>失败</th><th>连续失败</th><th>平均耗时</th><th>最近一次</th></tr>
+    </thead>
+    <tbody id="src-body"><tr><td colspan="7" class="empty">还没有音源调用记录</td></tr></tbody>
+  </table>
+
+  <p class="foot">
+    提示：<code>地域限制</code> 表示该音源在你服务器的出口 IP 上不可用（例如酷我在境外返回 407）；
+    <code>连续失败</code> 达到 5 次会自动进入 5 分钟<code>冷却</code>，期间点歌直接跳过它，
+    避免每次都白等一次超时（可用 <code>SOURCE_DEGRADE_AFTER</code> / <code>SOURCE_COOLDOWN_MIN</code> 调整，设 0 关闭）。
+    今日转码额度按「登录用户 / 匿名 IP」统计，防止接口被刷爆 CPU。
+    数据每天 <code>03:00</code> 自动备份到 <code>files/backups/</code>（保留 7 份），
+    凌晨 <code>04:00</code> 会把歌单里没缓存的歌提前转码，第二天首播不用等；
+    <code>05:00</code> 自动同步网易云歌单的新增曲目（只加不删）。
+    未登录访客按 IP 每天最多试听 <code>GUEST_DAILY_SONGS</code> 首（默认 20，0=不限）。
+  </p>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+// 应急口令模式（/status?key=ADMIN_PAGE_TOKEN）：接口请求也要带上，否则全是 401
+const PAGE_KEY = new URLSearchParams(location.search).get('key') || '';
+const KEYQ = PAGE_KEY ? '&key=' + encodeURIComponent(PAGE_KEY) : '';
+
+function fmtBytes(n){
+  if(!n && n !== 0) return '-';
+  const u = ['B','KB','MB','GB','TB'];
+  let i = 0, v = n;
+  while(v >= 1024 && i < u.length-1){ v /= 1024; i++; }
+  return v.toFixed(v >= 100 || i === 0 ? 0 : 1) + ' ' + u[i];
+}
+function fmtDur(s){
+  if(!s && s !== 0) return '-';
+  const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+  if(d > 0) return d + ' 天 ' + h + ' 小时';
+  if(h > 0) return h + ' 小时 ' + m + ' 分';
+  return m + ' 分';
+}
+function statusOf(s){
+  if(!s.enabled) return ['b-off','已关闭'];
+  if(s.cooling_down) return ['b-off','冷却中'];
+  if(s.success === 0 && s.fail === 0) return ['b-off','未调用'];
+  if(s.consecutive_fail >= 3) return ['b-bad','持续失败'];
+  if(s.consecutive_fail > 0) return ['b-warn','偶发失败'];
+  if(s.success === 0) return ['b-bad','从未成功'];
+  return ['b-ok','正常'];
+}
+
+function renderSources(list){
+  const body = $('src-body');
+  if(!list || list.length === 0){
+    body.innerHTML = '<tr><td colspan="7" class="empty">还没有音源调用记录</td></tr>';
+    return;
+  }
+  body.innerHTML = list.map(s => {
+    const [cls, label] = statusOf(s);
+    const recent = s.last_attempt
+      ? (s.consecutive_fail > 0 && s.last_error
+          ? '<span class="err">' + escapeHtml(s.last_error) + '</span>'
+          : escapeHtml(s.last_ok || s.last_attempt))
+      : '-';
+    return '<tr>'
+      + '<td>' + escapeHtml(s.name) + '</td>'
+      + '<td><span class="badge ' + cls + '">' + label + '</span></td>'
+      + '<td class="num">' + s.success + '</td>'
+      + '<td class="num">' + s.fail + '</td>'
+      + '<td class="num">' + s.consecutive_fail + '</td>'
+      + '<td class="num">' + (s.avg_ms ? s.avg_ms.toFixed(0) + ' ms' : '-') + '</td>'
+      + '<td>' + recent + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+function escapeHtml(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  })[c]);
+}
+
+/* ---------- 正在播放 ---------- */
+
+const NOW_SRC = {
+  kuwo:    {name:'酷我',    color:'#1f6fff'},
+  netease: {name:'网易云',  color:'#e0002b'},
+  qq:      {name:'QQ音乐',  color:'#16a34a'},
+  kugou:   {name:'酷狗',    color:'#0b6fd4'},
+  qishui:  {name:'汽水',    color:'#00b389'},
+  ext:     {name:'YouTube', color:'#ff0033'}
+};
+
+function rgbaOf(hex, a){
+  const h = String(hex).replace('#','');
+  const r = parseInt(h.slice(0,2),16) || 0;
+  const g = parseInt(h.slice(2,4),16) || 0;
+  const b = parseInt(h.slice(4,6),16) || 0;
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+}
+function fmtSecs(s){
+  s = Math.max(0, Math.round(s || 0));
+  return Math.floor(s/60) + ':' + String(s%60).padStart(2, '0');
+}
+function agoText(ts){
+  const d = Math.max(0, Math.round(Date.now()/1000 - (ts || 0)));
+  if (d < 15) return '刚刚';
+  if (d < 60) return d + ' 秒前';
+  if (d < 3600) return Math.floor(d/60) + ' 分钟前';
+  return Math.floor(d/3600) + ' 小时前';
+}
+
+function renderNow(items){
+  const box = $('now-box');
+  if (!items || !items.length){
+    box.innerHTML = '<div class="empty">当前没有在放的歌</div>';
+    return;
+  }
+  box.innerHTML = items.map(it => {
+    const src = NOW_SRC[String(it.source || '').toLowerCase()];
+    const srcTag = src
+      ? '<span class="src" style="color:' + src.color + ';background:' + rgbaOf(src.color,.13) +
+        ';border-color:' + rgbaOf(src.color,.32) + '">' + src.name + '</span>'
+      : '';
+    const dur = it.duration || 0;
+    const pct = dur ? Math.min(100, Math.round((it.position || 0) / dur * 100)) : 0;
+    const cover = it.cover_url
+      ? '<img class="cover" src="' + escapeHtml(it.cover_url) + '" alt="" ' +
+        'onerror="this.style.visibility=\'hidden\'">'
+      : '<div class="cover ph">♪</div>';
+    const who = it.user ? '<span class="who">' + escapeHtml(it.user) + '</span>' : '';
+    const state = it.fresh ? '正在播放' : (it.playing ? '心跳中断' : '已暂停');
+    return '<div class="nowcard' + (it.fresh ? ' live' : '') + '">' +
+      cover +
+      '<div class="info">' +
+        '<div class="t" title="' + escapeHtml(it.title) + '">' + escapeHtml(it.title) + '</div>' +
+        '<div class="a">' + escapeHtml(it.artist || '未知歌手') + '</div>' +
+        '<div class="meta">' +
+          '<span class="dot"></span><span>' + state + '</span>' + srcTag +
+          (who ? '<span>·</span><span>' + who + ' 的播放器</span>' : '') +
+          '<span class="time">' + fmtSecs(it.position) + ' / ' + (dur ? fmtSecs(dur) : '--:--') + '</span>' +
+          '<span>· ' + agoText(it.updated_at) + '</span>' +
+        '</div>' +
+        '<div class="prog"><i style="width:' + pct + '%"></i></div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function loadNow(){
+  try {
+    const r = await fetch('/api/now' + (PAGE_KEY ? '?key=' + encodeURIComponent(PAGE_KEY) : ''), {cache:'no-store'});
+    if (!r.ok) return;
+    const d = await r.json();
+    renderNow(d.items);
+    const live = (d.items || []).filter(x => x.fresh).length;
+    $('now-hint').textContent = live
+      ? live + ' 台设备正在播放 · 播放器每 8 秒心跳一次'
+      : '播放器每 8 秒心跳一次，45 秒没动静就当已暂停离开';
+  } catch (e) { /* 心跳面板失败不影响其它区域 */ }
+}
+
+/* ---------- 播放统计 ---------- */
+
+let statsDays = 14;
+
+function renderTrend(days) {
+  const box = $('st-chart');
+  if (!days || !days.length) {
+    box.innerHTML = '<div class="empty">还没有播放记录</div>';
+    return;
+  }
+  const max = Math.max(1, ...days.map(p => p.plays || 0));
+  box.innerHTML = days.map(p => {
+    const pct = Math.round((p.plays || 0) / max * 100);
+    const encPct = p.plays ? Math.round((p.transcode || 0) / p.plays * 100) : 0;
+    const label = statsDays > 16 ? p.date.slice(3) : p.date.slice(3);
+    return '<div class="col" title="' + p.full + ' ' + p.weekday +
+      '：播放 ' + p.plays + ' 首，转码 ' + p.transcode + ' 首，游客 ' + p.guest + ' 首">' +
+      '<div class="val">' + (p.plays || '') + '</div>' +
+      '<div class="track"><div class="bar" style="height:' + Math.max(pct, p.plays ? 3 : 0) + '%">' +
+        (encPct ? '<i style="height:' + encPct + '%"></i>' : '') +
+      '</div></div>' +
+      '<div class="lbl">' + label + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function renderRank(el, list, emptyText) {
+  if (!list || !list.length) {
+    el.innerHTML = '<div class="empty">' + emptyText + '</div>';
+    return;
+  }
+  const max = Math.max(1, ...list.map(x => x.count));
+  el.innerHTML = list.map((x, i) => {
+    const pct = Math.max(3, Math.round(x.count / max * 100));
+    return '<div class="rank">' +
+      '<div class="nm" title="' + escapeHtml(x.name) + '">' + (i + 1) + '. ' + escapeHtml(x.name) + '</div>' +
+      '<div class="track"><i style="width:' + pct + '%"></i></div>' +
+      '<div class="ct">' + x.count + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function renderHours(hours) {
+  const box = $('st-hours');
+  const labels = $('st-hourlabels');
+  if (!hours || !hours.length) { box.innerHTML = ''; labels.innerHTML = ''; return; }
+  const max = Math.max(1, ...hours);
+  box.innerHTML = hours.map((v, h) =>
+    '<div class="h" style="height:' + Math.max(v ? 4 : 1, Math.round(v / max * 100)) + '%" title="' +
+    String(h).padStart(2, '0') + ':00 — ' + v + ' 首"></div>').join('');
+  labels.innerHTML = hours.map((_, h) => '<span>' + (h % 3 === 0 ? h : '') + '</span>').join('');
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch('/api/stats?days=' + statsDays + KEYQ, {cache: 'no-store'});
+    if (!r.ok) return;
+    const d = await r.json();
+
+    renderTrend(d.days);
+    renderRank($('st-artists'), d.top_artists, '还没有听歌记录');
+    renderRank($('st-songs'), d.top_songs, '还没有听歌记录');
+    renderHours(d.hours);
+
+    const t = d.today || {};
+    $('st-today').textContent = (t.plays ?? 0) + ' 首';
+    $('st-today-x').textContent = '转码 ' + (t.transcode ?? 0) + ' · 游客 ' + (t.guest ?? 0)
+      + ' · 昨天 ' + (d.yesterday ?? 0);
+
+    const delta = (d.prev7 || 0) ? Math.round(((d.last7 - d.prev7) / d.prev7) * 100) : 0;
+    $('st-hint').textContent = '近 7 天 ' + (d.last7 ?? 0) + ' 首'
+      + ((d.prev7 || 0) ? '（较前 7 天 ' + (delta >= 0 ? '+' : '') + delta + '%）' : '')
+      + ' · 累计 ' + (d.total_plays ?? 0) + ' 首 · 浅色段=其中转码';
+  } catch (e) { /* 图表失败不影响其它面板 */ }
+}
+
+$('st-range').addEventListener('click', () => {
+  statsDays = statsDays === 14 ? 30 : (statsDays === 30 ? 7 : 14);
+  loadStats();
+});
+
+async function load(){
+  try{
+    const r = await fetch('/api/sources' + (PAGE_KEY ? '?key=' + encodeURIComponent(PAGE_KEY) : ''), {cache:'no-store'});
+    const d = await r.json();
+
+    const c = d.cache || {};
+    $('c-files').textContent = (c.music_files ?? 0) + ' 首';
+    $('c-size').textContent = fmtBytes(c.music_bytes || 0);
+    $('c-max').textContent = c.max_bytes ? fmtBytes(c.max_bytes) : '不限';
+    $('c-ttl').textContent = c.ttl_days > 0
+      ? '超 ' + c.ttl_days + ' 天自动清理' + (c.last_gc ? ' · 上次 ' + c.last_gc : '')
+      : '未开启 TTL 清理';
+
+    const t = d.transcode || {};
+    $('t-active').textContent = (t.active ?? 0) + ' / ' + (t.limit ?? '-');
+    $('t-meta').textContent = '累计 ' + (t.total ?? 0) + ' 次，失败 ' + (t.failed ?? 0) + ' 次';
+
+    const q = d.quota || {};
+    $('q-songs').textContent = (q.total_songs ?? 0) + ' 首';
+    const ipLimit = q.per_ip > 0 ? q.per_ip + '/IP' : 'IP 不限';
+    const userLimit = q.per_user > 0 ? q.per_user + '/用户' : '用户不限';
+    let top = '';
+    if (q.top && q.top[0]) {
+      const who = String(q.top[0].key).replace(/^(user|ip):/, '');
+      top = ' · 最多 ' + (who.length > 14 ? who.slice(0, 13) + '…' : who) + ' ' + q.top[0].songs + ' 首';
+    }
+    $('q-meta').textContent = ipLimit + '、' + userLimit + top;
+
+    if(c.disk_total_bytes){
+      $('d-free').textContent = fmtBytes(c.disk_free_bytes || 0);
+      $('d-total').textContent = '总量 ' + fmtBytes(c.disk_total_bytes);
+    } else {
+      $('d-free').textContent = '-';
+      $('d-total').textContent = '-';
+    }
+
+    const b = d.backup || {};
+    $('b-when').textContent = b.last_at ? b.last_at.slice(5, 16) : '从未备份';
+    $('b-meta').textContent = (b.count ?? 0) + ' 份 · 保留 ' + (b.keep ?? 7) + ' 份'
+      + (b.enabled ? ' · 每天 ' + String(b.hour ?? 3).padStart(2, '0') + ':00' : ' · 已关闭')
+      + (b.last_error ? ' · ' + b.last_error : '');
+
+    $('uptime').textContent = fmtDur(d.uptime_seconds || 0);
+    const html = (d.sources || []).filter(s => s.enabled).length;
+    $('src-list').textContent = '启用音源 ' + html + ' 个';
+
+    const sy = d.sync || {};
+    $('sy-n').textContent = (sy.enabled ?? 0) + ' / ' + (sy.jobs ?? 0) + ' 个';
+    $('sy-x').textContent = sy.on === false
+      ? '已全局关闭（SYNC_ENABLED=0）'
+      : ('每天 ' + String(sy.hour ?? 5).padStart(2, '0') + ':00'
+        + (sy.last_at ? ' · 上次 ' + sy.last_at.slice(5, 16) : '')
+        + (sy.failed ? ' · 失败 ' + sy.failed : ''));
+
+    const g = d.guest || {};
+    if (g.limit > 0) {
+      $('g-limit').textContent = g.limit + ' 首/天';
+      $('g-x').textContent = '今日 ' + (g.total ?? 0) + ' 首 · ' + (g.ips ?? 0) + ' 个 IP';
+    } else {
+      $('g-limit').textContent = '不限';
+      $('g-x').textContent = '未登录也能听（GUEST_DAILY_SONGS=0）';
+    }
+
+    renderSources(d.sources);
+    $('now').textContent = d.now || '';
+    loadStats();
+  }catch(e){
+    $('now').textContent = '刷新失败：' + e.message;
+  }
+}
+
+$('btn-backup').addEventListener('click', async () => {
+  const btn = $('btn-backup');
+  if (!confirm('现在备份一次数据？会写入 files/backups/ 目录。')) return;
+  btn.disabled = true; btn.textContent = '备份中…';
+  try {
+    const r = await fetch('/api/backup/run', {method: 'POST'});
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || '未知错误');
+    await load();
+    alert('备份完成：' + d.name);
+  } catch (e) {
+    alert('备份失败：' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '立即备份';
+  }
+});
+$('refresh').addEventListener('click', load);
+load();
+loadNow();
+setInterval(load, 10000);
+setInterval(loadNow, 5000);
+</script>
+</body>
+</html>

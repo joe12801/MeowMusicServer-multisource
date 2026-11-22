@@ -47,7 +47,7 @@ func HandleSearch(w http.ResponseWriter, r *http.Request) {
 	base := scheme + "://" + r.Host
 
 	// Search from multiple sources（歌名+歌手，歌手可为空=只按歌手搜）
-	items := searchFromAllSources(query, artist, limit)
+	items := searchFromAllSources(query, artist, limit, strings.ToLower(strings.TrimSpace(r.URL.Query().Get("source"))))
 
 	// Convert to frontend-compatible format（歌名+歌手去重）
 	results := make([]SearchResult, 0, len(items))
@@ -79,12 +79,20 @@ func HandleSearch(w http.ResponseWriter, r *http.Request) {
 			coverURL = base + coverURL
 		}
 
+		// 歌词：各音源自带的 lyric_url 基本都是空的，
+		// 统一指向本机 /api/lyric（按需从网易云拉 LRC 并缓存）。
+		lyricURL := item.LyricURL
+		if lyricURL == "" && strings.TrimSpace(item.Title) != "" {
+			lyricURL = base + "/api/lyric?song=" + url.QueryEscape(item.Title) +
+				"&singer=" + url.QueryEscape(item.Artist) + "&format=lrc"
+		}
+
 		results = append(results, SearchResult{
 			Title:    item.Title,
 			Artist:   item.Artist,
 			URL:      audioURL,
 			Link:     audioURL,
-			LyricURL: item.LyricURL,
+			LyricURL: lyricURL,
 			CoverURL: coverURL,
 			Duration: normalizeDuration(item.Duration),
 			Source:   item.Source,
@@ -136,12 +144,18 @@ func parseSearchLimit(raw string) int {
 // searchFromAllSources searches music from all available sources
 // query=歌名(可为空), artist=歌手(可为空)。两者至少一个非空。
 // limit 是期望返回的候选条数（前端可手动指定，默认 20）。
-func searchFromAllSources(query, artist string, limit int) []MusicItem {
+func searchFromAllSources(query, artist string, limit int, only string) []MusicItem {
 	if limit <= 0 {
 		limit = searchDefaultLimit
 	}
 	if limit > searchMaxLimit {
 		limit = searchMaxLimit
+	}
+
+	// 指定单一音源：汽水 / YouTube 这类补充源的曲库和主源基本不重叠，
+	// 混在「全部」里很难排到前面，单独选出来搜才有意义。
+	if only != "" {
+		return searchOnlySource(only, query, artist, limit)
 	}
 
 	// 只按歌手搜时多取一些再筛：音源会混入同名歌曲/翻唱，
@@ -224,6 +238,75 @@ func searchFromAllSources(query, artist string, limit int) []MusicItem {
 }
 
 // searchLocalMusic searches music from local files
+// searchOnlySource 只搜某一个音源（前端搜索框的「音源」筛选）。
+// 播放地址仍然统一指向 /stream_live，由它做多源回退与转码，和「全部」一致。
+func searchOnlySource(only, query, artist string, limit int) []MusicItem {
+	song, singer := strings.TrimSpace(query), strings.TrimSpace(artist)
+	if song == "" {
+		song, singer = singer, ""
+	}
+	if song == "" && singer == "" {
+		return nil
+	}
+
+	out := make([]MusicItem, 0, limit)
+	seen := make(map[string]bool, limit)
+	add := func(src, title, artist string, duration int) {
+		title = strings.TrimSpace(title)
+		if title == "" || len(out) >= limit {
+			return
+		}
+		if duration <= 0 {
+			duration = cachedDuration(title, artist)
+		}
+		key := toLower(title) + "\x00" + toLower(strings.TrimSpace(artist))
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, MusicItem{
+			Title:        title,
+			Artist:       strings.TrimSpace(artist),
+			Duration:     duration,
+			Source:       src,
+			AudioURL:     livePlayURL(title, artist),
+			AudioFullURL: livePlayURL(title, artist),
+		})
+	}
+
+	switch only {
+	case "qishui":
+		if qishuiEnabled() {
+			for _, s := range qishuiSearchLimit(song, singer, limit) {
+				add("qishui", s.Name, s.Artist, s.Duration)
+			}
+		}
+	case "kuwo":
+		for _, s := range kwSearch(song, singer) {
+			add("kuwo", s.Name, s.Artist, s.Duration)
+		}
+	case "netease":
+		for _, s := range neSearchLimit(song, singer, limit) {
+			add("netease", s.Name, s.Artist, s.Duration)
+		}
+	case "qq":
+		for _, s := range qqSearchLimit(song, singer, limit) {
+			add("qq", s.Name, s.Artist, s.Duration)
+		}
+	case "kugou":
+		for _, s := range kgSearchLimit(song, singer, limit) {
+			add("kugou", s.Name, s.Artist, s.Duration)
+		}
+	case "ext":
+		if mp3ApiSearchEnabled() {
+			for _, it := range mp3ApiCandidates(strings.TrimSpace(song+" "+singer), singer, limit) {
+				add("ext", it.Title, it.Artist, it.Duration)
+			}
+		}
+	}
+	return out
+}
+
 func searchLocalMusic(query string) []MusicItem {
 	// This function would search from local music files
 	// For now, return empty array
@@ -262,10 +345,14 @@ func searchFromAPI(query, artist string, limit int) []MusicItem {
 
 	results := make([]MusicItem, 0, limit)
 	seen := make(map[string]bool, limit)
-	add := func(title, artist string, duration int) {
+	add := func(src, title, artist string, duration int) {
 		title = strings.TrimSpace(title)
 		if title == "" {
 			return
+		}
+		// 音源给的时长经常是 0；这首歌要是以前转过码，本地 meta.json 里有准的
+		if duration <= 0 {
+			duration = cachedDuration(title, artist)
 		}
 		key := toLower(title) + "\x00" + toLower(strings.TrimSpace(artist))
 		if seen[key] {
@@ -276,6 +363,7 @@ func searchFromAPI(query, artist string, limit int) []MusicItem {
 			Title:        title,
 			Artist:       strings.TrimSpace(artist),
 			Duration:     duration,
+			Source:       src,
 			AudioURL:     livePlayURL(title, artist),
 			AudioFullURL: livePlayURL(title, artist),
 		})
@@ -299,7 +387,7 @@ func searchFromAPI(query, artist string, limit int) []MusicItem {
 	if limit > 30 && srcEnabled("netease") {
 		fmt.Printf("[Search] source=netease(bulk) query=%s singer=%s limit=%d\n", song, singer, limit)
 		for _, s := range neSearchLimit(song, singer, limit) {
-			add(s.Name, s.Artist, s.Duration)
+			add("netease", s.Name, s.Artist, s.Duration)
 			if remaining() <= 0 {
 				break
 			}
@@ -310,7 +398,7 @@ func searchFromAPI(query, artist string, limit int) []MusicItem {
 	if srcEnabled("kuwo") && remaining() > 0 {
 		fmt.Printf("[Search] source=kuwo query=%s singer=%s\n", song, singer)
 		for _, s := range kwSearch(song, singer) {
-			add(s.Name, s.Artist, s.Duration)
+			add("kuwo", s.Name, s.Artist, s.Duration)
 			if remaining() <= 0 {
 				break
 			}
@@ -321,7 +409,7 @@ func searchFromAPI(query, artist string, limit int) []MusicItem {
 	if remaining() > 0 && srcEnabled("netease") {
 		fmt.Printf("[Search] source=netease query=%s singer=%s\n", song, singer)
 		for _, s := range neSearchLimit(song, singer, remaining()) {
-			add(s.Name, s.Artist, s.Duration)
+			add("netease", s.Name, s.Artist, s.Duration)
 			if remaining() <= 0 {
 				break
 			}
@@ -332,7 +420,7 @@ func searchFromAPI(query, artist string, limit int) []MusicItem {
 	if remaining() > 0 && srcEnabled("qq") {
 		fmt.Printf("[Search] source=qq query=%s singer=%s\n", song, singer)
 		for _, s := range qqSearchLimit(song, singer, remaining()) {
-			add(s.Name, s.Artist, s.Duration)
+			add("qq", s.Name, s.Artist, s.Duration)
 			if remaining() <= 0 {
 				break
 			}
@@ -343,7 +431,19 @@ func searchFromAPI(query, artist string, limit int) []MusicItem {
 	if remaining() > 0 && srcEnabled("kugou") {
 		fmt.Printf("[Search] source=kugou query=%s singer=%s\n", song, singer)
 		for _, s := range kgSearchLimit(song, singer, remaining()) {
-			add(s.Name, s.Artist, s.Duration)
+			add("kugou", s.Name, s.Artist, s.Duration)
+			if remaining() <= 0 {
+				break
+			}
+		}
+	}
+
+	// 兜底 4：汽水音乐（抖音曲库，独家/下架歌常有；未登录只有 60 秒试听，
+	// 登录后（/tools 扫码）才是完整版，所以放在国内主源之后的补充位）
+	if remaining() > 0 && qishuiEnabled() {
+		fmt.Printf("[Search] source=qishui query=%s singer=%s\n", song, singer)
+		for _, s := range qishuiSearchLimit(song, singer, remaining()) {
+			add("qishui", s.Name, s.Artist, s.Duration)
 			if remaining() <= 0 {
 				break
 			}

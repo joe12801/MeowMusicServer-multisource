@@ -140,8 +140,8 @@ parseSuccess:
 		return MusicItem{}
 	}
 
-	// Create directory
-	dirName := fmt.Sprintf("./files/cache/music/%s-%s", response.Data.Singer, response.Data.Song)
+	// Create directory（目录名必须净化，否则歌手/歌名里的 ../ 会写出缓存目录）
+	dirName := filepath.Join("./files/cache/music", cacheDirName(response.Data.Singer, response.Data.Song))
 	err = os.MkdirAll(dirName, 0755)
 	if err != nil {
 		fmt.Println("[Error] Error creating directory:", err)
