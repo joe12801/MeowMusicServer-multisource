@@ -35,6 +35,8 @@ services:
       PLAYLIST_SONGS_MAX: "${PLAYLIST_SONGS_MAX:-150}"
       # 汽水搜索走 qishui-proxy（免签名公开搜索），取链/榜单仍透传给 gomusic
       QISHUI_BASE: "${QISHUI_BASE:-http://qishui-proxy:8080}"
+      # 0 = 整路关闭汽水（境外 IP 扫码授权过不去时用；见 ADMIN_NOTES 第十六节）
+      QISHUI_ENABLED: "${QISHUI_ENABLED:-1}"
     env_file:
       - path: .env
         required: false

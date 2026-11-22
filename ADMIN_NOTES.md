@@ -527,3 +527,73 @@ ffprobe 实测 duration=60；CDN 境外可访问，能正常转码）。
 
 实测一次全绿：build（双架构）→ 三处推送 → NAS 从 ACR 拉取（第 1 次就成功）→
 容器 `Up 7 seconds (healthy)`。
+
+## 十六、汽水音乐：在东京机器上关闭（2026-11-22 深夜决定）
+
+结论：**这台机器不再尝试汽水登录，整路关掉，等国内服务器再说。**
+
+### 为什么放弃
+
+22:30–23:47 连续测了 6 个二维码（每个有效期 5 分钟，`expires_at` 可以验证），
+情况完全一致：
+
+| 现象 | 数据 |
+|---|---|
+| 码能生成 | `POST /api/v1/system/qr_login/soda` 每次都 200，返回 key + base64 PNG |
+| 状态能查 | 每 3 秒查一次，连查 40 次全部 200 |
+| 但永远 `waiting` | 40 次里 0 次 `scanned`、0 次 `confirmed`，cookies.json 始终 `{}` |
+| 不是限流 | 全过程 `message:"success"`，没有 `rate_limited`（只有一次 18 秒内连建 3 个码触发了风控，那一个 token 后才出现 `rate_limited`） |
+
+也就是说：**扫码动作根本没有传到汽水的服务端**。手机侧无论怎么扫，服务器这边读到的
+永远是「等待扫码」。判断是境外出口 IP（东京 Oracle AS31898）在扫码换票环节被拒，
+不是代码问题、不是轮询频率问题。
+
+顺带记两个坑：
+
+- `POST /api/v1/system/cookies` 传任意 JSON 会**原样合并**进 cookie 存储。
+  测试时传了 `{"source":"soda","cookie":"x"}`，结果 `cookies.json` 变成
+  `{"cookie":"x","source":"soda"}`，汽水后续请求全带着假 cookie。
+  恢复方法：`echo '{}' > data/qishui/cookies.json` 再 `docker restart gomusic`。
+- 建码频率要克制：18 秒内连建 3 个，汽水会对新 token 回 `rate_limited`，
+  那个 token 就废了，得等冷却再建。
+
+### 怎么关的
+
+```bash
+# 1. .env 追加（env_file 会带进容器）
+QISHUI_ENABLED=0
+
+# 2. 重建主服务（配置才生效）
+cd /vol1/docker/meowmusic && sudo docker compose up -d meow-music
+
+# 3. 停掉只为汽水存在的两个容器（省内存）
+sudo docker stop qishui-proxy gomusic
+```
+
+关闭后表现：`/api/qishui/status` 返回 `enabled:false`，前端 `detectQishui()` 自动
+把「汽水」筛选 chip 摘掉，搜索结果里也不会再出现汽水源（实测搜「晴天」6 条全是 kuwo）。
+代码层面 `qishui.go` / `qishui_admin.go` / `theme/full-app.html` 的 chip 都保留，
+不影响其它音源。
+
+### 将来在境内机器上重新开启
+
+1. `.env` 把 `QISHUI_ENABLED=1`（或删掉这一行，默认就是开）
+2. `docker compose --profile qishui up -d qishui-proxy gomusic`
+3. 浏览器打开 `/tools` → 「汽水音乐」面板 → 生成二维码 → **抖音 App 扫码并点确认**
+4. 看 `data/qishui/cookies.json`：从 `{}` 变成带 `sessionid` 的对象 = 登录成功；
+   再拿一首 300 秒的歌验证 `/api/v1/music/url` 返回的文件大小（未登录只有约 30 秒）
+
+### 备选方案：直接注入 cookie
+
+不改代码就能绕过扫码 —— go-music-api 支持热更新 cookie：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/system/cookies \
+  -H 'Content-Type: application/json' \
+  -d '{"soda":"sessionid=xxx; sessionid_ss=yyy; ..."}'
+```
+
+cookie 从自己电脑的浏览器拿：打开 `https://bff-pc.qishui.com` → 抖音扫码登录 →
+F12 → Application → Cookies → 复制该域下全部（关键是 `sessionid`）。
+注意 2026-11-22 傍晚试过注入**抖音网页版**的 cookie，结果汽水直接回
+`ERR_REQUEST_FORBIDDEN/1000006`（风控），所以必须是**汽水站自己**的 cookie。
