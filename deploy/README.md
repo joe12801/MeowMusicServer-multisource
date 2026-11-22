@@ -115,6 +115,28 @@ docker compose logs -f --tail=50        # 看启动日志
 
 ---
 
+## 4.5 汽水音乐增强（可选）
+
+主服务已内置汽水音源筛选，但要真正搜全库/完整播放，还需 sidecar 与搜索签名绕过。
+仓库提供了自包含的增强包 [`deploy/qishui/`](qishui/README.md)：
+
+- `gomusic` sidecar（`guohuiyuan/go-music-api`）负责汽水取链 / 榜单 / 扫码登录；
+- `qishui-proxy` 轻量代理把搜索改走免签名公开接口（官方接口已要求原生签名，未签名返回空）；
+- 一键脚本 `deploy/qishui/upgrade.sh` 负责拉最新镜像并重建三个容器，密钥从 `.env` 读取，不写死。
+
+快速上手：
+
+```bash
+cp deploy/qishui/proxy.cjs $MEOW_HOME/qishui-proxy/proxy.cjs
+echo '{}' > $MEOW_HOME/data/qishui/cookies.json && chown 1000:1000 $MEOW_HOME/data/qishui/cookies.json
+bash deploy/qishui/upgrade.sh
+# 需要汽水全库搜索时，按 deploy/qishui/README.md 的扫码登录步骤写入 cookie
+```
+
+> 注意：出口 IP 需在境内；抖音域 cookie 对汽水无效且会触发风控。详见增强包 README。
+
+---
+
 ## 5. 日常运维
 
 ```bash
