@@ -63,6 +63,16 @@ jobs:
           docker image inspect joe1280/meowmusic:latest \
             --format '当前 running 镜像: {{.Id}} ({{.Created}})' 2>/dev/null || true
 
+      # compose 里 qishui-proxy 挂载 ./qishui-proxy/proxy.cjs（相对 project-directory），
+      # 这个文件不在 docker-compose.yml 里，也不随 .env 常驻，必须每次从仓库同步过来，
+      # 否则「带 --profile qishui 的 up」会因挂载源缺失直接失败。
+      - name: 同步汽水代理脚本
+        run: |
+          set -e
+          mkdir -p "$DEPLOY_DIR/qishui-proxy"
+          cp "$GITHUB_WORKSPACE/deploy/qishui/proxy.cjs" "$DEPLOY_DIR/qishui-proxy/proxy.cjs"
+          ls -la "$DEPLOY_DIR/qishui-proxy/"
+
       - name: Pull 镜像
         env:
           GH_TOKEN_FOR_GHCR: ${{ secrets.GITHUB_TOKEN }}
@@ -97,10 +107,17 @@ jobs:
 
       - name: 重建容器
         run: |
-          docker compose \
-            -f "$GITHUB_WORKSPACE/deploy/docker-compose.yml" \
-            --project-directory "$DEPLOY_DIR" \
-            up -d --remove-orphans
+          set -e
+          COMPOSE="docker compose -f $GITHUB_WORKSPACE/deploy/docker-compose.yml --project-directory $DEPLOY_DIR"
+          # qishui-proxy 在 compose 里带 profiles:["qishui"]，不带 profile 就是「永不启动」，
+          # 而主服务的 QISHUI_BASE 默认指向它 —— 这就是「汽水搜索恒为空」的根因。
+          # 万一 node 镜像拉不动导致整条 up 失败，回退成不带 profile 的部署，别把主服务拖下水。
+          if $COMPOSE --profile qishui up -d --remove-orphans; then
+            echo "✅ 已按 qishui profile 部署（含汽水搜索代理）"
+          else
+            echo "⚠️ 带 qishui profile 的 up 失败（多为 node 镜像拉取失败），回退为不含 sidecar 的部署"
+            $COMPOSE up -d --remove-orphans
+          fi
 
       - name: 健康检查
         run: |
