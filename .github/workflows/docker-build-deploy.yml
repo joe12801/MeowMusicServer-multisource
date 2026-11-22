@@ -105,6 +105,9 @@ jobs:
       always() && needs.build.result == 'success' &&
       (github.event_name == 'push' || inputs.deploy)
     runs-on: [self-hosted, nas]
+    env:
+      # 该 runner 的 joe1280 用户没有 home 目录，docker login 会 mkdir /home/joe1280 失败
+      DOCKER_CONFIG: ${{ github.workspace }}/.docker
     steps:
       - name: Checkout (取 deploy/docker-compose.yml)
         uses: actions/checkout@v4
@@ -120,20 +123,29 @@ jobs:
         env:
           GH_TOKEN_FOR_GHCR: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
+          mkdir -p "$DOCKER_CONFIG"
           COMPOSE="docker compose -f $GITHUB_WORKSPACE/deploy/docker-compose.yml --project-directory $DEPLOY_DIR"
-          # 优先阿里云 ACR：国内直连、公开免登录、无 Docker Hub 限流
-          if MEOW_IMAGE="$IMAGE_ACR:latest" $COMPOSE pull; then
-            echo "✅ 已从阿里云 ACR 拉取 $IMAGE_ACR:latest"
-            echo "MEOW_IMAGE=$IMAGE_ACR:latest" >> "$GITHUB_ENV"
-          elif $COMPOSE pull; then
-            echo "✅ 已从 Docker Hub 拉取 $IMAGE_DOCKERHUB:latest"
-          else
-            echo "⚠️ ACR 与 Docker Hub 都失败，回落到 GHCR"
-            echo "$GH_TOKEN_FOR_GHCR" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            MEOW_IMAGE="$IMAGE_GHCR:latest" $COMPOSE pull
-            echo "MEOW_IMAGE=$IMAGE_GHCR:latest" >> "$GITHUB_ENV"
-          fi
+
+          # 依次尝试 ACR → Docker Hub → GHCR，每个源重试 3 次
+          try_pull() {
+            for i in 1 2 3; do
+              echo "--- 尝试 $1（第 $i 次）---"
+              if MEOW_IMAGE="$1" $COMPOSE pull; then
+                echo "MEOW_IMAGE=$1" >> "$GITHUB_ENV"
+                echo "✅ 拉取成功：$1"
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+
+          if try_pull "$IMAGE_ACR:latest"; then exit 0; fi
+          echo "⚠️ ACR 三次均失败，回落 Docker Hub"
+          if try_pull "$IMAGE_DOCKERHUB:latest"; then exit 0; fi
+          echo "⚠️ Docker Hub 也失败，回落 GHCR"
+          echo "$GH_TOKEN_FOR_GHCR" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          try_pull "$IMAGE_GHCR:latest"
 
       - name: 重建容器
         run: |
