@@ -528,11 +528,21 @@ ffprobe 实测 duration=60；CDN 境外可访问，能正常转码）。
 实测一次全绿：build（双架构）→ 三处推送 → NAS 从 ACR 拉取（第 1 次就成功）→
 容器 `Up 7 seconds (healthy)`。
 
-## 十六、汽水音乐：在东京机器上关闭（2026-11-22 深夜决定）
+## 十六、汽水音乐：登录待境内机器，页面按钮保持常显（2026-11-22 深夜）
 
-结论：**这台机器不再尝试汽水登录，整路关掉，等国内服务器再说。**
+结论：**这台机器不尝试汽水登录，但也不屏蔽这个音源** —— 按钮一直显示在页面上，
+境内机器登录后立刻就能用；境外机器搜索照样能出结果（只是未登录只给约 30 秒）。
 
-### 为什么放弃
+### 最终处理（2026-11-23 01:20）
+
+- `.env` 保持 `QISHUI_ENABLED=1`，`qishui-proxy` + `gomusic` 两个容器都跑着
+- 改了 `theme/full-app.html` 的 `detectQishui()`：**探测失败也不再 `chip.remove()`**，
+  只在 tooltip 里说明当前状态（可用 / 未登录只搜榜单 / 该机已关闭 / 连不上）
+- 镜像 `meowmusic:qishui1`（`.env` 的 `MEOW_IMAGE` 指向它）
+- 实测：首页 HTML 里 `data-src="qishui"` 存在；`/api/search?...&source=qishui` 搜
+  「光辉岁月」第一条就是 Beyond 原唱
+
+### 为什么登录一定失败
 
 22:30–23:47 连续测了 6 个二维码（每个有效期 5 分钟，`expires_at` 可以验证），
 情况完全一致：
@@ -557,7 +567,7 @@ ffprobe 实测 duration=60；CDN 境外可访问，能正常转码）。
 - 建码频率要克制：18 秒内连建 3 个，汽水会对新 token 回 `rate_limited`，
   那个 token 就废了，得等冷却再建。
 
-### 怎么关的
+### 如果需要临时把汽水整路关掉
 
 ```bash
 # 1. .env 追加（env_file 会带进容器）
@@ -569,11 +579,6 @@ cd /vol1/docker/meowmusic && sudo docker compose up -d meow-music
 # 3. 停掉只为汽水存在的两个容器（省内存）
 sudo docker stop qishui-proxy gomusic
 ```
-
-关闭后表现：`/api/qishui/status` 返回 `enabled:false`，前端 `detectQishui()` 自动
-把「汽水」筛选 chip 摘掉，搜索结果里也不会再出现汽水源（实测搜「晴天」6 条全是 kuwo）。
-代码层面 `qishui.go` / `qishui_admin.go` / `theme/full-app.html` 的 chip 都保留，
-不影响其它音源。
 
 ### 将来在境内机器上重新开启
 

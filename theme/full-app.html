@@ -2238,26 +2238,26 @@
         })();
 
         async function detectQishui() {
+            // 汽水按钮默认就在页面上：境内机器登录后直接可用，境外机器即使连不上也不摘掉，
+            // 只在 tooltip 里说明当前状态（用户明确要求「别屏蔽，让它显示」）。
+            const chip = document.querySelector('#srcChips [data-src="qishui"]');
+            if (!chip) return;
+            chip.title = '汽水音乐（抖音曲库）';
             if (typeof token === 'undefined' || !token) return;
             try {
                 const r = await fetch('/api/qishui/status', { headers: { 'Authorization': 'Bearer ' + token } });
                 if (!r.ok) return;
                 const d = await r.json();
-                const chip = document.querySelector('#srcChips [data-src="qishui"]');
-                if (!chip) return;
-                if (d.usable) {
+                if (d.enabled === false) {
+                    chip.title = '汽水音乐：该机器已关闭此源（QISHUI_ENABLED=0）';
+                } else if (d.usable) {
                     chip.title = d.searchable
                         ? '汽水音乐（抖音曲库）'
                         : '汽水音乐：未登录，只能搜到榜单里的歌（去 /tools 扫码解锁全库）';
-                    return;
+                } else if (d.reason) {
+                    chip.title = '汽水音乐：' + d.reason;
                 }
-                chip.remove();
-                if (searchSource === 'qishui') {
-                    searchSource = '';
-                    const all = document.querySelector('#srcChips [data-src=""]');
-                    if (all) all.classList.add('active');
-                }
-            } catch (e) { /* 探测失败就保留按钮，不影响其他源 */ }
+            } catch (e) { /* 探测失败也保留按钮，不影响其他源 */ }
         }
 
         async function searchMusic() {
