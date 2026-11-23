@@ -220,8 +220,15 @@ func (us *UserStore) CreateUser(username, email, password string) (*User, error)
 
 // AuthenticateUser authenticates a user by username and password
 func (us *UserStore) AuthenticateUser(username, password string) (*User, string, error) {
+	// 用户名和邮箱都能登：注册时若撞邮箱，界面会提示「去登录」，
+	// 用户自然会顺手把邮箱填进登录框，这里得认。
+	login := strings.ToLower(strings.TrimSpace(username))
+
 	us.mu.RLock()
-	userID, exists := us.Usernames[strings.ToLower(username)]
+	userID, exists := us.Usernames[login]
+	if !exists {
+		userID, exists = us.Emails[login]
+	}
 	us.mu.RUnlock()
 
 	if !exists {

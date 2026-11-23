@@ -1539,7 +1539,7 @@
             <div id="authMessage"></div>
             
             <form id="loginForm" class="form active" onsubmit="handleLogin(event)">
-                <input type="text" id="loginUsername" placeholder="用户名" required>
+                <input type="text" id="loginUsername" placeholder="用户名或邮箱" required>
                 <input type="password" id="loginPassword" placeholder="密码" required>
                 <button type="submit" class="primary">登录</button>
             </form>
@@ -1912,6 +1912,16 @@
             document.getElementById('authMessage').innerHTML = '';
         }
 
+        // 「邮箱已注册」时点「去登录」：切到登录页，顺手把邮箱填好
+        let pendingLoginAccount = '';
+        function prefillLogin() {
+            switchAuthTab('login');
+            if (pendingLoginAccount) {
+                document.getElementById('loginUsername').value = pendingLoginAccount;
+                document.getElementById('loginPassword').focus();
+            }
+        }
+
         // 认证接口的响应读法：先拿文本再尝试解析 JSON。
         // 后端偶发的纯文本错误（限流、网关 502 等）如果直接 res.json()，
         // 会抛 "Unexpected token 'e' ... is not valid JSON"，
@@ -1951,7 +1961,8 @@
                 } else {
                     let msg = result.error || '注册失败';
                     if (msg.indexOf('已注册') >= 0) {
-                        msg += ' <a href="javascript:;" onclick="switchAuthTab(\'login\')" style="text-decoration:underline;color:inherit;font-weight:600;">去登录 →</a>';
+                        pendingLoginAccount = email;
+                        msg += ' <a href="javascript:;" onclick="prefillLogin()" style="text-decoration:underline;color:inherit;font-weight:600;">去登录 →</a>';
                     }
                     showAuthMessage(msg, 'error');
                 }
