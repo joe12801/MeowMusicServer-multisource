@@ -53,8 +53,43 @@ jobs:
       DOCKER_CONFIG: ${{ github.workspace }}/.docker
       TAG: ${{ inputs.image_tag }}
     steps:
+      # 这台 NAS 到 github.com:443 时通时不通（2026-11-23 14:21 那次就是
+      # 「Failed to connect to github.com port 443 after 134135 ms」，三次重试全挂）。
+      # runner 到 GitHub 的控制通道没问题，只有 git fetch 走不通，所以 checkout 失败
+      # 不该让整条部署报废 —— 部署真正需要的只有 deploy/docker-compose.yml。
       - name: Checkout (取 deploy/docker-compose.yml)
+        id: checkout
         uses: actions/checkout@v4
+        continue-on-error: true
+
+      # 文件优先级：本次 checkout > NAS 本地缓存 > 部署目录里的存量 compose。
+      # 每次成功 checkout 都会刷新本地缓存，之后断网也能照常 pull + 重建。
+      - name: 准备 compose 文件
+        run: |
+          set -e
+          CACHE="$DEPLOY_DIR/.repo-cache"
+          WS_COMPOSE="$GITHUB_WORKSPACE/deploy/docker-compose.yml"
+          CHOSEN=""
+          if [ -f "$WS_COMPOSE" ]; then
+            mkdir -p "$CACHE/qishui"
+            cp "$WS_COMPOSE" "$CACHE/docker-compose.yml"
+            if [ -f "$GITHUB_WORKSPACE/deploy/qishui/proxy.cjs" ]; then
+              cp "$GITHUB_WORKSPACE/deploy/qishui/proxy.cjs" "$CACHE/qishui/proxy.cjs"
+            fi
+            echo "✅ 使用本次 checkout 的 compose（已刷新本地缓存）"
+            CHOSEN="$WS_COMPOSE"
+          elif [ -f "$CACHE/docker-compose.yml" ]; then
+            echo "⚠️ checkout 没拿到文件（GitHub 不可达？），回退到本地缓存"
+            CHOSEN="$CACHE/docker-compose.yml"
+          elif [ -f "$DEPLOY_DIR/docker-compose.yml" ]; then
+            echo "⚠️ 无缓存，回退到部署目录存量 compose"
+            CHOSEN="$DEPLOY_DIR/docker-compose.yml"
+          else
+            echo "❌ 没有可用的 docker-compose.yml（checkout 失败且无缓存），无法部署"
+            exit 1
+          fi
+          echo "MEOW_COMPOSE_FILE=$CHOSEN" >> "$GITHUB_ENV"
+          echo "实际使用的 compose：$CHOSEN"
 
       - name: 记录当前镜像
         run: |
@@ -69,8 +104,13 @@ jobs:
       - name: 同步汽水代理脚本
         run: |
           set -e
+          SRC="$(dirname "$MEOW_COMPOSE_FILE")/qishui/proxy.cjs"
           mkdir -p "$DEPLOY_DIR/qishui-proxy"
-          cp "$GITHUB_WORKSPACE/deploy/qishui/proxy.cjs" "$DEPLOY_DIR/qishui-proxy/proxy.cjs"
+          if [ -f "$SRC" ]; then
+            cp "$SRC" "$DEPLOY_DIR/qishui-proxy/proxy.cjs"
+          else
+            echo "⚠️ 源文件 $SRC 不存在，沿用部署目录里已有的 proxy.cjs"
+          fi
           ls -la "$DEPLOY_DIR/qishui-proxy/"
 
       - name: Pull 镜像
@@ -80,7 +120,7 @@ jobs:
           set -e
           if [ -z "$TAG" ]; then echo "❌ image_tag 为空"; exit 1; fi
           mkdir -p "$DOCKER_CONFIG"
-          COMPOSE="docker compose -f $GITHUB_WORKSPACE/deploy/docker-compose.yml --project-directory $DEPLOY_DIR"
+          COMPOSE="docker compose -f $MEOW_COMPOSE_FILE --project-directory $DEPLOY_DIR"
 
           # 依次尝试 ACR → Docker Hub → GHCR，每个源重试 3 次
           # 只拉 meow-music：lrcapi / gomusic 是 Docker Hub 上的第三方镜像，
@@ -108,7 +148,7 @@ jobs:
       - name: 重建容器
         run: |
           set -e
-          COMPOSE="docker compose -f $GITHUB_WORKSPACE/deploy/docker-compose.yml --project-directory $DEPLOY_DIR"
+          COMPOSE="docker compose -f $MEOW_COMPOSE_FILE --project-directory $DEPLOY_DIR"
           # qishui-proxy 在 compose 里带 profiles:["qishui"]，不带 profile 就是「永不启动」，
           # 而主服务的 QISHUI_BASE 默认指向它 —— 这就是「汽水搜索恒为空」的根因。
           # 万一 node 镜像拉不动导致整条 up 失败，回退成不带 profile 的部署，别把主服务拖下水。
@@ -134,7 +174,7 @@ jobs:
           done
           echo "❌ 20 次探测仍不可用，输出容器日志："
           docker compose \
-            -f "$GITHUB_WORKSPACE/deploy/docker-compose.yml" \
+            -f "$MEOW_COMPOSE_FILE" \
             --project-directory "$DEPLOY_DIR" \
             logs --tail 80
           exit 1

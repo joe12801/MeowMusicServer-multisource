@@ -945,3 +945,53 @@ curl -s -X POST http://127.0.0.1:2233/api/auth/register \
   -d '{"username":"x","email":"4334838@qq.com","password":"123456"}'
 # 期望：HTTP 400 + {"error":"该邮箱已注册过，请直接登录"}
 ```
+
+## 二十三、NAS 部署抗抖动：checkout 失败也能部署（2026-11-23 14:2x）
+
+### 现象
+
+手动点 `Deploy to NAS`（run 45123534553）后 6 分钟失败，`Checkout` 步骤报：
+
+```
+fatal: unable to access 'https://github.com/joe12801/MeowMusicServer-multisource/':
+HTTP/2 stream 1 was not closed cleanly before end of the underlying stream
+fatal: unable to access '...': Failed to connect to github.com port 443 after 134135 ms
+```
+
+三次重试全部 `Couldn't connect to server`，后面 5 个步骤全部 skipped。
+注意 **runner 本身是在线的**（`Set up job` 成功、能收到 job），只有 `git fetch` 走
+`github.com:443` 不通 —— 典型的代理只覆盖了 API 通道、没覆盖 git 直连，或者代理进程掉了。
+
+### 改法
+
+`deploy-nas.yml`：
+
+1. `Checkout` 加 `continue-on-error: true` + `id: checkout`。拿不到代码不再判死。
+2. 新增 `准备 compose 文件` 步骤，按优先级挑文件并写入 `MEOW_COMPOSE_FILE`：
+   - `$GITHUB_WORKSPACE/deploy/docker-compose.yml`（本次 checkout，成功时**刷新缓存**）
+   - `$DEPLOY_DIR/.repo-cache/docker-compose.yml`（NAS 本地缓存）
+   - `$DEPLOY_DIR/docker-compose.yml`（部署目录存量）
+   - 三者都没有才 fail
+3. `同步汽水代理脚本` 改成从 `dirname($MEOW_COMPOSE_FILE)/qishui/proxy.cjs` 取，
+   源不存在时沿用部署目录里已有的 `proxy.cjs`（不再硬失败）。
+4. `Pull 镜像` / `重建容器` / `健康检查` 里的 `-f $GITHUB_WORKSPACE/deploy/...`
+   全部换成 `-f "$MEOW_COMPOSE_FILE"`。相对路径不受影响：compose 的基准是
+   `--project-directory $DEPLOY_DIR`，不是 compose 文件所在目录。
+
+顺带：`docker-build-deploy.yml` 的 `paths-ignore` 加了 `.github/**`，
+以后改 CI 不会白跑一次双架构构建。
+
+### 仍然存在的限制
+
+缓存要**先成功过一次**才种下。NAS 现在完全连不上 github.com 时：
+- 若 `/vol1/meowmusic/deploy/` 里还有历史 compose → 能走通；
+- 若也没有 → 仍会失败，只能先修 NAS 的代理（或配置
+  `git config --global http.proxy`）再跑。
+
+手动救急（NAS 上）：
+
+```bash
+cd /vol1/meowmusic/deploy
+docker compose pull meow-music
+docker compose --profile qishui up -d
+```

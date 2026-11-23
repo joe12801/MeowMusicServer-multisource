@@ -16,6 +16,8 @@ on:
       - '**.md'
       - 'LICENSE'
       - 'NOTICE'
+      # 改 CI 本身不需要重新出镜像（Dockerfile / 代码变了才需要）
+      - '.github/**'
   workflow_dispatch:
 
 concurrency:
