@@ -1912,6 +1912,19 @@
             document.getElementById('authMessage').innerHTML = '';
         }
 
+        // 认证接口的响应读法：先拿文本再尝试解析 JSON。
+        // 后端偶发的纯文本错误（限流、网关 502 等）如果直接 res.json()，
+        // 会抛 "Unexpected token 'e' ... is not valid JSON"，
+        // 界面只剩一句莫名其妙的「网络错误」，真正的原因被吃掉了。
+        async function readAuthResult(response) {
+            const text = await response.text();
+            try {
+                const data = JSON.parse(text);
+                if (data && typeof data === 'object') return data;
+            } catch (_) { /* 不是 JSON，走下面兜底 */ }
+            return { error: (text || '').trim() || ('请求失败（HTTP ' + response.status + '）') };
+        }
+
         async function handleRegister(e) {
             e.preventDefault();
             const username = document.getElementById('regUsername').value.trim();
@@ -1927,7 +1940,7 @@
                     body: JSON.stringify({ username, email, password })
                 });
 
-                const result = await response.json();
+                const result = await readAuthResult(response);
 
                 if (response.ok) {
                     token = result.token;
@@ -1936,7 +1949,11 @@
                     showAuthMessage('注册成功！', 'success');
                     setTimeout(() => showAppPage(), 1000);
                 } else {
-                    showAuthMessage(result.error || '注册失败', 'error');
+                    let msg = result.error || '注册失败';
+                    if (msg.indexOf('已注册') >= 0) {
+                        msg += ' <a href="javascript:;" onclick="switchAuthTab(\'login\')" style="text-decoration:underline;color:inherit;font-weight:600;">去登录 →</a>';
+                    }
+                    showAuthMessage(msg, 'error');
                 }
             } catch (error) {
                 showAuthMessage('网络错误: ' + error.message, 'error');
@@ -1957,7 +1974,7 @@
                     body: JSON.stringify({ username, password })
                 });
 
-                const result = await response.json();
+                const result = await readAuthResult(response);
 
                 if (response.ok) {
                     token = result.token;

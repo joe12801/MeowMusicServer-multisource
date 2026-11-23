@@ -275,13 +275,34 @@ func (us *UserStore) Logout(token string) {
 
 // HTTP Handlers
 
+// jsonError 统一用 JSON 返回错误。
+// 之前用 http.Error 返回纯文本（text/plain），前端 res.json() 解析会抛
+// "Unexpected token 'e', \"email alre\"... is not valid JSON"，
+// 用户看到的是一条莫名的「网络错误」，真正的失败原因被吞掉了。
+func jsonError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// registerErrorMessage 把 CreateUser 的英文错误翻成给用户看的话
+func registerErrorMessage(err error) string {
+	switch err.Error() {
+	case "username already exists":
+		return "这个用户名已被占用，换一个试试"
+	case "email already exists":
+		return "该邮箱已注册过，请直接登录"
+	}
+	return "注册失败：" + err.Error()
+}
+
 // HandleRegister handles user registration
 func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[API] Register request received from %s\n", r.RemoteAddr)
 
 	if r.Method != http.MethodPost {
 		fmt.Printf("[API] Register: Method not allowed: %s\n", r.Method)
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		jsonError(w, "请求方法不支持", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -289,7 +310,7 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		fmt.Printf("[API] Error reading body: %v\n", err)
-		http.Error(w, "Error reading request body", http.StatusBadRequest)
+		jsonError(w, "读取请求失败，请重试", http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
@@ -299,7 +320,7 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		fmt.Printf("[API] Error parsing JSON: %v\n", err)
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		jsonError(w, "请求格式错误", http.StatusBadRequest)
 		return
 	}
 	fmt.Printf("[API] Parsed: username=%s, email=%s\n", req.Username, req.Email)
@@ -307,13 +328,13 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// Validate input
 	if req.Username == "" || req.Email == "" || req.Password == "" {
 		fmt.Printf("[API] Validation failed: missing fields\n")
-		http.Error(w, "All fields are required", http.StatusBadRequest)
+		jsonError(w, "请填写用户名、邮箱和密码", http.StatusBadRequest)
 		return
 	}
 
 	if len(req.Password) < 6 {
 		fmt.Printf("[API] Validation failed: password too short\n")
-		http.Error(w, "Password must be at least 6 characters", http.StatusBadRequest)
+		jsonError(w, "密码至少 6 位", http.StatusBadRequest)
 		return
 	}
 
@@ -322,7 +343,7 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	user, err := userStore.CreateUser(req.Username, req.Email, req.Password)
 	if err != nil {
 		fmt.Printf("[API] Error creating user: %v\n", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		jsonError(w, registerErrorMessage(err), http.StatusBadRequest)
 		return
 	}
 	fmt.Printf("[API] User created successfully! ID=%s\n", user.ID)
@@ -357,7 +378,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method != http.MethodPost {
 		fmt.Printf("[API] Login: Method not allowed: %s\n", r.Method)
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		jsonError(w, "请求方法不支持", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -365,7 +386,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		fmt.Printf("[API] Error reading body: %v\n", err)
-		http.Error(w, "Error reading request body", http.StatusBadRequest)
+		jsonError(w, "读取请求失败，请重试", http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
@@ -375,7 +396,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		fmt.Printf("[API] Error parsing JSON: %v\n", err)
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		jsonError(w, "请求格式错误", http.StatusBadRequest)
 		return
 	}
 	fmt.Printf("[API] Login username: %s\n", req.Username)
@@ -385,7 +406,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	user, token, err := userStore.AuthenticateUser(req.Username, req.Password)
 	fmt.Printf("[API] Authentication result: %v\n", err)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		jsonError(w, "用户名或密码错误", http.StatusUnauthorized)
 		return
 	}
 
@@ -405,7 +426,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 // HandleLogout handles user logout
 func HandleLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		jsonError(w, "请求方法不支持", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -420,7 +441,7 @@ func HandleLogout(w http.ResponseWriter, r *http.Request) {
 	clearSessionCookie(w, r)
 
 	if token == "" {
-		http.Error(w, "Missing authorization token", http.StatusUnauthorized)
+		jsonError(w, "未登录或登录已失效", http.StatusUnauthorized)
 		return
 	}
 
@@ -443,13 +464,13 @@ func HandleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if token == "" {
-		http.Error(w, "Missing authorization token", http.StatusUnauthorized)
+		jsonError(w, "未登录或登录已失效", http.StatusUnauthorized)
 		return
 	}
 
 	user, err := userStore.GetUserByToken(token)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		jsonError(w, "登录已失效，请重新登录", http.StatusUnauthorized)
 		return
 	}
 
@@ -509,7 +530,7 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			}
 		}
 
-		http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
+		jsonError(w, "登录已失效，请重新登录", http.StatusUnauthorized)
 	}
 }
 

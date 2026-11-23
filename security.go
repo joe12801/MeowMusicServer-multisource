@@ -187,7 +187,7 @@ func limitByIP(rl *rateLimiter, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !rl.allow(clientIP(r)) {
 			w.Header().Set("Retry-After", "60")
-			http.Error(w, "too many requests, please retry later", http.StatusTooManyRequests)
+			jsonError(w, "操作太频繁，请稍后再试", http.StatusTooManyRequests)
 			return
 		}
 		next(w, r)
