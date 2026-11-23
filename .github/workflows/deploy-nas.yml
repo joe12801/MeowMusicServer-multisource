@@ -48,6 +48,9 @@ jobs:
     name: Deploy to NAS
     runs-on: [self-hosted, nas]
     timeout-minutes: 30
+    permissions:
+      # 读仓库文件（checkout 走不通时用 Contents API 拉 compose）
+      contents: read
     env:
       # 该 runner 的 joe1280 用户没有 home 目录，docker login 会 mkdir /home/joe1280 失败
       DOCKER_CONFIG: ${{ github.workspace }}/.docker
@@ -62,14 +65,30 @@ jobs:
         uses: actions/checkout@v4
         continue-on-error: true
 
-      # 文件优先级：本次 checkout > NAS 本地缓存 > 部署目录里的存量 compose。
-      # 每次成功 checkout 都会刷新本地缓存，之后断网也能照常 pull + 重建。
+      # 文件优先级：本次 checkout > GitHub API 直取 > NAS 本地缓存 > 部署目录存量。
+      # 每次拿到文件都会刷新本地缓存，之后彻底断网也能照常 pull + 重建。
       - name: 准备 compose 文件
+        env:
+          GH_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_SLUG: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           set -e
           CACHE="$DEPLOY_DIR/.repo-cache"
           WS_COMPOSE="$GITHUB_WORKSPACE/deploy/docker-compose.yml"
           CHOSEN=""
+
+          # 用 Contents API 取单个文件：git 走的是 github.com:443，API 走 api.github.com，
+          # 两个主机被墙/被代理漏掉的情况经常不一致 —— runner 能收到 job 就说明 API 通。
+          fetch_api() { # $1=仓库内路径  $2=本地目标
+            mkdir -p "$(dirname "$2")"
+            curl -fsS -m 40 \
+              -H "Authorization: Bearer $GH_API_TOKEN" \
+              -H "Accept: application/vnd.github.raw" \
+              "https://api.github.com/repos/$REPO_SLUG/contents/$1?ref=$COMMIT_SHA" \
+              -o "$2"
+          }
+
           if [ -f "$WS_COMPOSE" ]; then
             mkdir -p "$CACHE/qishui"
             cp "$WS_COMPOSE" "$CACHE/docker-compose.yml"
@@ -78,14 +97,18 @@ jobs:
             fi
             echo "✅ 使用本次 checkout 的 compose（已刷新本地缓存）"
             CHOSEN="$WS_COMPOSE"
+          elif fetch_api deploy/docker-compose.yml "$CACHE/docker-compose.yml" \
+               && fetch_api deploy/qishui/proxy.cjs "$CACHE/qishui/proxy.cjs"; then
+            echo "✅ checkout 失败，但已通过 GitHub API 取到 compose（已刷新本地缓存）"
+            CHOSEN="$CACHE/docker-compose.yml"
           elif [ -f "$CACHE/docker-compose.yml" ]; then
-            echo "⚠️ checkout 没拿到文件（GitHub 不可达？），回退到本地缓存"
+            echo "⚠️ API 也不通，回退到 NAS 本地缓存"
             CHOSEN="$CACHE/docker-compose.yml"
           elif [ -f "$DEPLOY_DIR/docker-compose.yml" ]; then
             echo "⚠️ 无缓存，回退到部署目录存量 compose"
             CHOSEN="$DEPLOY_DIR/docker-compose.yml"
           else
-            echo "❌ 没有可用的 docker-compose.yml（checkout 失败且无缓存），无法部署"
+            echo "❌ 没有可用的 docker-compose.yml（checkout / API 均失败且无缓存），无法部署"
             exit 1
           fi
           echo "MEOW_COMPOSE_FILE=$CHOSEN" >> "$GITHUB_ENV"
