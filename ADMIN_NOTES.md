@@ -849,3 +849,42 @@ NAS 关机 / runner 没起来时，这个 job 会**无限期 queued**，并且�
 
 `test-and-build.yml` 是上游 ESP32 项目的构建流程（`runs-on: self-hosted`，无标签），
 只在手动触发的发版场景用，和本项目的镜像链路无关，未改动。
+
+## 二十一、播放器「关闭」按钮（2026-11-23 下午）
+
+需求：底部胶囊播放条占屏幕，希望能关掉。
+
+### 实现
+
+`.player` 本来就是「默认 `display:none`，加 `.active` 才 `display:flex`」，
+所以关闭 = 移除 class，**不销毁元素**：
+
+- HTML：在 ☰ / 🌙 / 🔗 后面加 `<button class="player-mini-btn player-close-btn" onclick="closePlayer()">✕</button>`
+  （`aria-label="关闭播放器"`，颜色 `#c4c4c4` 压暗一档，避免和播放功能按钮混淆，hover 才变粉）
+- `closePlayer()`：`audio.pause()`（`pause` 事件里已有 `reportNow(false)`，不再重复上报）
+  → `player.classList.remove('active')` → 同时收起 `#lyricsContainer` 和 `#lyricsToggle`
+- `audio` 的 `play` 事件里补了一句：若 `#player` 没有 `.active` 就加回来。
+  这样媒体键、队列下一首、设备端推流等任何途径恢复播放，胶囊条都会自己弹出来，
+  不会出现「有声音但看不到播放器」。
+
+保留的东西：`currentSong`、`currentSongList`、`audio.src`、播放进度、播放模式。
+`restoreQueue()` 只恢复队列不自动播放，所以刷新页面后播放器不会自己冒出来。
+
+行为小结：
+
+| 操作 | 结果 |
+|---|---|
+| 点 ✕ | 暂停 + 收起胶囊条 + 收起歌词面板和歌词悬浮球 + toast 提示 |
+| 再点任意歌曲 / 队列下一首 | 重新展开，从新选的歌开始 |
+| 按媒体键恢复播放 | 胶囊条自动弹回（`play` 事件兜底） |
+| 刷新页面 | 保持收起（不会自动播放） |
+
+### 部署
+
+`theme/` 不在容器挂载里（来自镜像 `COPY theme /app/theme`），所以两种走法：
+
+- 临时：`docker cp /tmp/full-app.html meow-music:/app/theme/full-app.html`，立即生效，重建容器即失效
+- 正式：CI 出镜像后切 `MEOW_IMAGE`（本次 `meowmusic:ui1`）
+
+注意 `http.ServeFile` 会带 `Last-Modified`，浏览器可能命中 304 —— 覆盖文件后 mtime 变了，
+正常刷新即可；还看不到就 Ctrl+F5。
