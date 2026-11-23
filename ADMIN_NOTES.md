@@ -888,3 +888,60 @@ NAS 关机 / runner 没起来时，这个 job 会**无限期 queued**，并且�
 
 注意 `http.ServeFile` 会带 `Last-Modified`，浏览器可能命中 304 —— 覆盖文件后 mtime 变了，
 正常刷新即可；还看不到就 Ctrl+F5。
+
+## 二十二、注册报「Unexpected token … is not valid JSON」的修复（2026-11-23 下午）
+
+### 现象
+
+注册页输入 用户名 / 邮箱 / 密码 后，红框提示：
+
+```
+网络错误: Unexpected token 'e', "email alre"... is not valid JSON
+```
+
+### 根因
+
+两个问题叠在一起：
+
+1. **后端错误是纯文本**。`user.go` 里所有认证接口用 `http.Error(w, "email already exists", 400)`，
+   返回 `Content-Type: text/plain`，只有成功路径才写 JSON。
+2. **前端无脑 `res.json()`**。`theme/full-app.html` 的 `handleRegister/handleLogin`
+   不管状态码直接 `await response.json()`，于是解析纯文本抛异常，
+   被 `catch` 当成「网络错误」显示，真正的失败原因（邮箱已被注册）反而被吞掉。
+
+### 改法
+
+后端（`user.go`）：
+
+- 新增 `jsonError(w, msg, code)`，统一 `{"error": "..."}` + `application/json; charset=utf-8`。
+- 认证接口全部改用它，文案顺手改成中文：
+  | 原英文 | 现中文 |
+  |---|---|
+  | email already exists | 该邮箱已注册过，请直接登录 |
+  | username already exists | 这个用户名已被占用，换一个试试 |
+  | invalid username or password | 用户名或密码错误 |
+  | Password must be at least 6 characters | 密码至少 6 位 |
+  | too many requests… | 操作太频繁，请稍后再试（`security.go` 的 `limitByIP` 同步改） |
+- `AuthMiddleware` 的 `Invalid or expired token` → 「登录已失效，请重新登录」。
+
+前端（`theme/full-app.html`）：
+
+- 新增 `readAuthResult(response)`：先 `text()` 再 `try JSON.parse`，
+  解析失败就把原文当错误信息（兜住网关 502 HTML、限流纯文本等一切非 JSON 响应）。
+- 撞邮箱时提示后面挂一个「去登录 →」，点了切到登录 tab 并预填邮箱
+  （`pendingLoginAccount` + `prefillLogin()`）。
+
+### 顺手加的：邮箱也能登录
+
+既然提示语引导用户「去登录」，用户必然会往输入框里填邮箱，所以
+`AuthenticateUser` 在 `Usernames` 里查不到时会 fallback 到 `Emails`，
+登录框 placeholder 改为「用户名或邮箱」。
+
+### 验证要点
+
+```bash
+curl -s -X POST http://127.0.0.1:2233/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"x","email":"4334838@qq.com","password":"123456"}'
+# 期望：HTTP 400 + {"error":"该邮箱已注册过，请直接登录"}
+```
