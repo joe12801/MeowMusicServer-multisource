@@ -592,6 +592,14 @@
             position: relative; line-height: 1;
         }
         .player-mini-btn:hover { background: #FFF0F5; }
+        /* 关闭播放器：跟在 ☰ 🌙 🔗 后面，颜色压暗一档，
+           免得被当成「播放相关功能」误点；hover 才变粉 */
+        .player-close-btn {
+            color: #c4c4c4;
+            font-size: 13px;
+            margin-left: 2px;
+        }
+        .player-close-btn:hover { background: #FFE4E1; color: #E75480; }
         .player-mini-btn.on::after {
             content: ''; position: absolute; top: 2px; right: 2px;
             width: 6px; height: 6px; border-radius: 50%; background: #ff3b6b;
@@ -1683,6 +1691,7 @@
                 <button class="player-mini-btn" onclick="openQueuePanel()" id="queueBtn" title="播放队列">☰</button>
                 <button class="player-mini-btn" onclick="openSleepMenu()" id="sleepBtn" title="睡眠定时">🌙</button>
                 <button class="player-mini-btn" onclick="shareCurrentSong()" id="shareBtn" title="复制这首歌的分享链接">🔗</button>
+                <button class="player-mini-btn player-close-btn" onclick="closePlayer()" id="closePlayerBtn" title="关闭播放器（只收起，队列还在）" aria-label="关闭播放器">✕</button>
             </div>
             
             <!-- 律动波纹 -->
@@ -2506,6 +2515,30 @@
             saveQueue();
         }
 
+        // 收起播放器。#player 默认 display:none，只有 .active 才展开，
+        // 所以这里只是去掉 class —— 元素、audio、播放队列都还在内存里，
+        // 下次 playMusic / playNext 会重新 add('active') 把胶囊条弹回来。
+        function closePlayer() {
+            const player = document.getElementById('player');
+            if (!player) return;
+
+            const audio = document.getElementById('audioPlayer');
+            // 只是暂停，不写 null src：pause 事件里会自己 reportNow(false)，
+            // 这里再报一次是多余请求。队列和 currentSong 都保留。
+            if (audio) audio.pause();
+
+            player.classList.remove('active');
+
+            // 歌词面板是 fixed 铺满下半屏的、歌词悬浮球是独立浮层，
+            // 播放器收了它们也得跟着收，否则会飘着一个点开是空的麦克风
+            const lyrPanel = document.getElementById('lyricsContainer');
+            if (lyrPanel) lyrPanel.classList.remove('active');
+            const lyrBtn = document.getElementById('lyricsToggle');
+            if (lyrBtn) lyrBtn.classList.remove('active');
+
+            toast('播放器已收起，点任意歌曲即可重新打开', 2400);
+        }
+
         // 歌词相关功能
         const LYRICS_OPEN_KEY = 'meow_lyrics_open';
 
@@ -2756,6 +2789,15 @@
 
             // 播放/暂停动画控制
             audio.addEventListener('play', () => {
+                // 用户点过 ✕ 收起播放器后，任何方式恢复播放（媒体键、队列下一首、
+                // 设备端推流）都得把胶囊条弹回来，否则会出现「有声音但看不到播放器」。
+                // pause 事件里已经 reportNow(false)，这里不用再补。
+                const player = document.getElementById('player');
+                if (player && !player.classList.contains('active')) {
+                    player.classList.add('active');
+                    const lyrBtn = document.getElementById('lyricsToggle');
+                    if (lyrBtn && (lyricsData || []).length) lyrBtn.classList.add('active');
+                }
                 document.getElementById('vinylRecord').classList.add('playing');
                 document.getElementById('musicWaves').style.opacity = '1';
                 reportNow(true);
