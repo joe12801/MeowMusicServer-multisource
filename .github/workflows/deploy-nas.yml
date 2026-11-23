@@ -64,6 +64,9 @@ jobs:
         id: checkout
         uses: actions/checkout@v4
         continue-on-error: true
+        # 正常 17 秒；GitHub 抽风时 git 单次连接超时就是 134 秒、还会重试 3 次，
+        # 掐在 2 分钟，失败就赶紧走后面的 API / 缓存兜底，别干等 7 分钟。
+        timeout-minutes: 2
 
       # 文件优先级：本次 checkout > GitHub API 直取 > NAS 本地缓存 > 部署目录存量。
       # 每次拿到文件都会刷新本地缓存，之后彻底断网也能照常 pull + 重建。
