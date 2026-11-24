@@ -55,16 +55,14 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          # ⚠️ 旧 NAS 暂时移出矩阵：它的 runner `nas-220` 从 2026-11-24 起一直 offline，
-          #    而 job 级 if 用不了 matrix 上下文（if 在矩阵展开前求值，会报
-          #    "Unrecognized named-value: 'matrix'"），没法做「按条目开关」。
-          #    只要 machine 还在矩阵里，那个 job 就永久 queued（queued 不受
-          #    timeout-minutes 约束），整个 run 永远不结束。
-          #    那台 runner 恢复在线后，把下面三行注释取消即可重新参与部署：
-          # - runner: nas
-          #   label: 旧 NAS
-          #   deploy_dir: /vol1/meowmusic/deploy
-          #   profile: qishui
+          # 旧 NAS（公网 168.110.13.25 / 内网 10.0.0.147 / oracle-jp-arm），
+          # 部署目录就是 compose + .env + data 所在目录（不是 src/ 也不是 deploy/）。
+          # 2 核 12G，带汽水（qishui-proxy + gomusic）。
+          - runner: nas
+            label: 旧 NAS (oracle-jp-arm)
+            deploy_dir: /vol1/docker/meowmusic
+            profile: qishui
+          # 新 NAS（飞牛 FNOS-N1-Black，1.9G 内存），只跑主服务 + 歌词源。
           - runner: nas2
             label: 新 NAS (FNOS-N1-Black)
             deploy_dir: /vol1/docker/meowmusic
