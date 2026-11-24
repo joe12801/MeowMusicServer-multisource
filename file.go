@@ -157,9 +157,29 @@ func serveLocalFile(w http.ResponseWriter, r *http.Request) {
 	} else {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 	}
+
+	// ESP32 音箱：必须 200 定长整包发完。
+	// 固件把 Read() 返回 0 当成下载结束，206 分段响应会让它提前停（播一会就没声）。
+	// 这一分支与 v1.6.6 之前的 fileHandler 行为一致；浏览器仍走 ServeContent。
+	if parts[0] == "cache" && isMusicDevice(r) && isAudioFile(absPath) {
+		if err := serveAudioFull(w, f, info.Size()); err != nil {
+			fmtLogf("[Static] device audio send error: %v", err)
+		}
+		return
+	}
+
 	// ServeContent 自带 Range / If-Modified-Since 支持，浏览器拖进度条、
 	// 断点续传都不用重下整首。
 	http.ServeContent(w, r, filepath.Base(absPath), info.ModTime(), f)
+}
+
+// isAudioFile 判断扩展名是不是设备会直接播放的音频。
+func isAudioFile(p string) bool {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".amr":
+		return true
+	}
+	return false
 }
 
 // proxyRemoteHandler 只为「音源给的远程封面 / 音频链接」做转发。

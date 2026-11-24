@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -328,6 +329,13 @@ func tailString(s string, n int) string {
 // 无 Range 请求时返回定长 200（ESP32 esp_http_client 按长度读完即结束）；
 // 带 Range 时返回 206 + 正确分段，浏览器拖进度条/续传不用重下整首。
 // 旧实现声明了 Accept-Ranges: bytes 却从不处理 Range 头，永远 200 全量。
+// serveCachedAudio 把缓存文件返回给客户端。
+//
+// 关键：ESP32 固件必须收到「200 + Content-Length + 完整 body」。
+// 固件里 Read() 返回 0 就当成"下载完成"，一旦走到 206 分段响应、
+// 或服务端边读盘边发（块之间有间隙），它会提前结束读取，
+// 表现为「播一会儿就停 / 一卡一卡」。所以对设备固定走旧行为：
+// 定长 200，一次性把整首歌发完。浏览器继续用 ServeContent 支持拖进度条。
 func serveCachedAudio(w http.ResponseWriter, r *http.Request, cacheFile string) error {
 	f, err := os.Open(cacheFile)
 	if err != nil {
@@ -339,6 +347,10 @@ func serveCachedAudio(w http.ResponseWriter, r *http.Request, cacheFile string) 
 		return err
 	}
 
+	if isMusicDevice(r) {
+		return serveAudioFull(w, f, info.Size())
+	}
+
 	w.Header().Set("Content-Type", "audio/mpeg")
 	w.Header().Set("Accept-Ranges", "bytes")
 	if info.Size() > 0 {
@@ -348,4 +360,24 @@ func serveCachedAudio(w http.ResponseWriter, r *http.Request, cacheFile string) 
 	// 只有客户端显式要 Range 时才走 206。
 	http.ServeContent(w, r, filepath.Base(cacheFile), info.ModTime(), f)
 	return nil
+}
+
+// isMusicDevice 判断请求是否来自 ESP32 音箱。
+// 固件报 "ESP32-Music-Player/1.0"，不同板子可能带其它后缀，统一按包含匹配。
+func isMusicDevice(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.Header.Get("User-Agent")), "esp32")
+}
+
+// serveAudioFull 忽略 Range，按 200 + Content-Length 一次性发完整个文件。
+// 这是 v1.6.6 之前的行为，ESP32 的 esp_http_client 按长度读完即结束，最稳。
+func serveAudioFull(w http.ResponseWriter, f *os.File, size int64) error {
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("Accept-Ranges", "bytes")
+	if size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+	w.WriteHeader(http.StatusOK)
+	n, err := io.Copy(w, f)
+	fmt.Printf("[Stream] device full-body 200: %d/%d bytes\n", n, size)
+	return err
 }
