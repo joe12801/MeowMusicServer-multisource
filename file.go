@@ -158,12 +158,13 @@ func serveLocalFile(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 	}
 
-	// ESP32 音箱：必须 200 定长整包发完。
-	// 固件把 Read() 返回 0 当成下载结束，206 分段响应会让它提前停（播一会就没声）。
-	// 这一分支与 v1.6.6 之前的 fileHandler 行为一致；浏览器仍走 ServeContent。
-	if parts[0] == "cache" && isMusicDevice(r) && isAudioFile(absPath) {
-		if err := serveAudioFull(w, f, info.Size()); err != nil {
-			fmtLogf("[Static] device audio send error: %v", err)
+	// 音频文件：只要不是「从中间续读」，一律 200 定长整包发完。
+	// 固件把 Read() 返回 0 当成下载结束，206 分段响应会让它提前停
+	// （播一会就没声、一卡一卡）。这一分支与 v1.6.6 之前的 fileHandler 一致；
+	// 浏览器拖进度条时发的是 bytes=N-（N>0），仍走 ServeContent 的 206。
+	if parts[0] == "cache" && isAudioFile(absPath) && !wantsMidStreamRange(r) {
+		if err := serveAudioFull(w, r, f, info.Size()); err != nil {
+			fmtLogf("[Static] audio send error: %v", err)
 		}
 		return
 	}

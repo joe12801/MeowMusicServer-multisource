@@ -347,8 +347,11 @@ func serveCachedAudio(w http.ResponseWriter, r *http.Request, cacheFile string) 
 		return err
 	}
 
-	if isMusicDevice(r) {
-		return serveAudioFull(w, f, info.Size())
+	// 只要不是「从中间续读」，一律 200 整包。
+	// 不能只看 UA：固件在不同代码路径上发的 UA 并不统一，
+	// 之前按 UA 判定时仍有请求掉到 206 分支，设备照样卡。
+	if !wantsMidStreamRange(r) {
+		return serveAudioFull(w, r, f, info.Size())
 	}
 
 	w.Header().Set("Content-Type", "audio/mpeg")
@@ -356,28 +359,72 @@ func serveCachedAudio(w http.ResponseWriter, r *http.Request, cacheFile string) 
 	if info.Size() > 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	}
-	// ServeContent 在非 Range 请求下按 Content-Length 定长返回，
-	// 只有客户端显式要 Range 时才走 206。
+	// 从中间开始的 Range（浏览器拖进度条 / 断点续传）才走 206。
 	http.ServeContent(w, r, filepath.Base(cacheFile), info.ModTime(), f)
 	return nil
 }
 
 // isMusicDevice 判断请求是否来自 ESP32 音箱。
-// 固件报 "ESP32-Music-Player/1.0"，不同板子可能带其它后缀，统一按包含匹配。
+// 仅用于日志打点，不再参与分流决策（固件各路径 UA 不统一）。
 func isMusicDevice(r *http.Request) bool {
 	return strings.Contains(strings.ToLower(r.Header.Get("User-Agent")), "esp32")
 }
 
+// wantsMidStreamRange 判断请求是否真的要求「文件中段」的数据。
+//
+// 这是设备能否稳定播放的关键：ESP32 固件的 esp_http_client 只要读不到数据
+// （Read() 返回 0，例如 206 分段之间出现间隙）就当成"下载结束"，
+// 于是播几秒就停、停了又被上层重连，表现成"一卡一卡"。
+// 所以只有 start > 0 的 Range 才走 206；`bytes=0-`、`bytes=`、无 Range
+// 一律返回 200 + Content-Length + 完整 body。
+func wantsMidStreamRange(r *http.Request) bool {
+	raw := strings.TrimSpace(r.Header.Get("Range"))
+	if raw == "" {
+		return false
+	}
+	if !strings.HasPrefix(raw, "bytes=") {
+		return false
+	}
+	// 多段 Range 直接按整包发（设备不用，浏览器也能接受 200 全量）
+	spec := strings.TrimSpace(strings.Split(strings.TrimPrefix(raw, "bytes="), ",")[0])
+	dash := strings.IndexByte(spec, '-')
+	if dash < 0 {
+		return false
+	}
+	start := strings.TrimSpace(spec[:dash])
+	if start == "" {
+		// `bytes=-500` 是取尾部，需要 206
+		return true
+	}
+	n, err := strconv.ParseInt(start, 10, 64)
+	if err != nil {
+		return false
+	}
+	return n > 0
+}
+
 // serveAudioFull 忽略 Range，按 200 + Content-Length 一次性发完整个文件。
 // 这是 v1.6.6 之前的行为，ESP32 的 esp_http_client 按长度读完即结束，最稳。
-func serveAudioFull(w http.ResponseWriter, f *os.File, size int64) error {
+func serveAudioFull(w http.ResponseWriter, r *http.Request, f *os.File, size int64) error {
 	w.Header().Set("Content-Type", "audio/mpeg")
 	w.Header().Set("Accept-Ranges", "bytes")
 	if size > 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 	w.WriteHeader(http.StatusOK)
+	if size == 0 || r.Method == http.MethodHead {
+		return nil
+	}
 	n, err := io.Copy(w, f)
-	fmt.Printf("[Stream] device full-body 200: %d/%d bytes\n", n, size)
+	if err == nil && n < size {
+		// 客户端提前断开也走这里，保留日志便于判断是设备自己断的还是服务端断的
+		err = io.ErrUnexpectedEOF
+	}
+	ua := r.Header.Get("User-Agent")
+	if len(ua) > 40 {
+		ua = ua[:40]
+	}
+	fmt.Printf("[Stream] full-body 200: %d/%d bytes ua=%q range=%q err=%v\n",
+		n, size, ua, r.Header.Get("Range"), err)
 	return err
 }
