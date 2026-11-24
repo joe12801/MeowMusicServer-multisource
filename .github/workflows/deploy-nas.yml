@@ -50,24 +50,23 @@ jobs:
     name: Deploy to ${{ matrix.label }}
     runs-on: [self-hosted, "${{ matrix.runner }}"]
     timeout-minutes: 30
-    # 关掉某台机器就把它 matrix 里的 enabled 改成 false —— 否则 runner 离线时
-    # 那个 job 会永久 queued（queued 不受 timeout-minutes 约束），整个 run 永远不结束。
-    if: ${{ matrix.enabled }}
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
         include:
-          - runner: nas
-            label: 旧 NAS
-            # 2026-11-24: runner `nas-220` 离线（机器不明），先停用；
-            # 那台 runner 恢复后把它改回 true 就会重新参与部署。
-            enabled: false
-            deploy_dir: /vol1/meowmusic/deploy
-            profile: qishui
+          # ⚠️ 旧 NAS 暂时移出矩阵：它的 runner `nas-220` 从 2026-11-24 起一直 offline，
+          #    而 job 级 if 用不了 matrix 上下文（if 在矩阵展开前求值，会报
+          #    "Unrecognized named-value: 'matrix'"），没法做「按条目开关」。
+          #    只要 machine 还在矩阵里，那个 job 就永久 queued（queued 不受
+          #    timeout-minutes 约束），整个 run 永远不结束。
+          #    那台 runner 恢复在线后，把下面三行注释取消即可重新参与部署：
+          # - runner: nas
+          #   label: 旧 NAS
+          #   deploy_dir: /vol1/meowmusic/deploy
+          #   profile: qishui
           - runner: nas2
             label: 新 NAS (FNOS-N1-Black)
-            enabled: true
             deploy_dir: /vol1/docker/meowmusic
             profile: ""
     permissions:
