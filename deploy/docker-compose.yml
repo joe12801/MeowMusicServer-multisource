@@ -75,6 +75,9 @@ services:
   gomusic:
     image: ${GOMUSIC_IMAGE:-guohuiyuan/go-music-api:latest}
     container_name: gomusic
+    # 跟 qishui-proxy 一起用 profile 隔离：不带 --profile qishui 就不启动，
+    # 内存小的机器（1.9G 的 NAS）只跑主服务 + 歌词源也完全正常。
+    profiles: ["qishui"]
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai

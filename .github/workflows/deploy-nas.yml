@@ -40,14 +40,29 @@ env:
   # 阿里云个人版 ACR（公开仓库，拉取不需要登录；国内拉取比 Docker Hub 快且不限流）
   IMAGE_ACR: crpi-wv2uaegt8g2y0g3c.cn-guangzhou.personal.cr.aliyuncs.com/joeloveqt-project/meowmusic
   ACR_REGISTRY: crpi-wv2uaegt8g2y0g3c.cn-guangzhou.personal.cr.aliyuncs.com
-  # NAS 上的部署目录（存放 .env 与 data/，compose 文件由每次 checkout 提供）
-  DEPLOY_DIR: /vol1/meowmusic/deploy
 
 jobs:
   deploy:
-    name: Deploy to NAS
-    runs-on: [self-hosted, nas]
+    # 矩阵部署：每台 NAS 一个 self-hosted runner，各自独立。
+    # fail-fast: false —— 一台离线/失败不能拖累另一台。
+    # deploy_dir 是那台机器上放 .env 与 data/ 的目录（compose 文件由 checkout/API 提供）
+    # profile: 那台机器要不要带 --profile qishui（内存小的机器留空，只跑主服务+歌词源）
+    name: Deploy to ${{ matrix.label }}
+    runs-on: [self-hosted, "${{ matrix.runner }}"]
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - runner: nas
+            label: 旧 NAS
+            deploy_dir: /vol1/meowmusic/deploy
+            profile: qishui
+          - runner: nas2
+            label: 新 NAS (FNOS-N1-Black)
+            deploy_dir: /vol1/docker/meowmusic
+            profile: ""
     permissions:
       # 读仓库文件（checkout 走不通时用 Contents API 拉 compose）
       contents: read
@@ -55,6 +70,8 @@ jobs:
       # 该 runner 的 joe1280 用户没有 home 目录，docker login 会 mkdir /home/joe1280 失败
       DOCKER_CONFIG: ${{ github.workspace }}/.docker
       TAG: ${{ inputs.image_tag }}
+      DEPLOY_DIR: ${{ matrix.deploy_dir }}
+      COMPOSE_PROFILE: ${{ matrix.profile }}
     steps:
       # 这台 NAS 到 github.com:443 时通时不通（2026-11-23 14:21 那次就是
       # 「Failed to connect to github.com port 443 after 134135 ms」，三次重试全挂）。
@@ -177,11 +194,19 @@ jobs:
           COMPOSE="docker compose -f $MEOW_COMPOSE_FILE --project-directory $DEPLOY_DIR"
           # qishui-proxy 在 compose 里带 profiles:["qishui"]，不带 profile 就是「永不启动」，
           # 而主服务的 QISHUI_BASE 默认指向它 —— 这就是「汽水搜索恒为空」的根因。
-          # 万一 node 镜像拉不动导致整条 up 失败，回退成不带 profile 的部署，别把主服务拖下水。
-          if $COMPOSE --profile qishui up -d --remove-orphans; then
-            echo "✅ 已按 qishui profile 部署（含汽水搜索代理）"
+          # 但内存小的机器（新 NAS 只有 1.9G）不需要汽水，matrix 里 profile 留空即可。
+          if [ -n "${COMPOSE_PROFILE:-}" ]; then
+            PROFILE_ARGS="--profile $COMPOSE_PROFILE"
+            echo "带 profile 部署：$COMPOSE_PROFILE"
           else
-            echo "⚠️ 带 qishui profile 的 up 失败（多为 node 镜像拉取失败），回退为不含 sidecar 的部署"
+            PROFILE_ARGS=""
+            echo "不带 profile 部署（只跑主服务 + 歌词源）"
+          fi
+          # 万一 node 镜像拉不动导致整条 up 失败，回退成不带 profile 的部署，别把主服务拖下水。
+          if $COMPOSE $PROFILE_ARGS up -d --remove-orphans; then
+            echo "✅ 部署完成（profile: ${COMPOSE_PROFILE:-无}）"
+          else
+            echo "⚠️ 带 profile 的 up 失败（多为 node 镜像拉取失败），回退为不含 sidecar 的部署"
             $COMPOSE up -d --remove-orphans
           fi
 
@@ -208,6 +233,9 @@ jobs:
       - name: 部署后状态
         if: always()
         run: |
+          echo "目标：${{ matrix.label }}（$DEPLOY_DIR）"
           docker ps --filter name=meow-music --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+          echo "--- 全部容器 ---"
+          docker ps --format 'table {{.Names}}\t{{.Status}}'
           echo "--- 磁盘 ---"
           df -h /vol1 | tail -1
