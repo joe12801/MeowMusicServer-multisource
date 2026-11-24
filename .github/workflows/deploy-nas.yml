@@ -50,6 +50,9 @@ jobs:
     name: Deploy to ${{ matrix.label }}
     runs-on: [self-hosted, "${{ matrix.runner }}"]
     timeout-minutes: 30
+    # 关掉某台机器就把它 matrix 里的 enabled 改成 false —— 否则 runner 离线时
+    # 那个 job 会永久 queued（queued 不受 timeout-minutes 约束），整个 run 永远不结束。
+    if: ${{ matrix.enabled }}
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -57,10 +60,14 @@ jobs:
         include:
           - runner: nas
             label: 旧 NAS
+            # 2026-11-24: runner `nas-220` 离线（机器不明），先停用；
+            # 那台 runner 恢复后把它改回 true 就会重新参与部署。
+            enabled: false
             deploy_dir: /vol1/meowmusic/deploy
             profile: qishui
           - runner: nas2
             label: 新 NAS (FNOS-N1-Black)
+            enabled: true
             deploy_dir: /vol1/docker/meowmusic
             profile: ""
     permissions:
