@@ -425,10 +425,10 @@ func streamConvertAudio(inputURL, outputFile string) error {
 	// -t 600: 只下载前10分钟，减少80%下载量！
 	// 移除 reconnect 参数，避免兼容性问题
 	// 添加 -bufsize 以提高稳定性
-	cmd := exec.Command("ffmpeg", "-y",
+	cmd := ffmpegCmd(nil, "-y",
 		"-t", "600",
 		"-i", inputURL,
-		"-threads", "0",
+		"-threads", "1",
 		"-ac", "1", "-ar", "24000", "-b:a", "32k", "-q:a", "9",
 		"-bufsize", "64k",
 		tempFile)
@@ -464,9 +464,9 @@ func streamConvertToWriter(inputURL string, w http.ResponseWriter) error {
 	fmt.Printf("[Info] Live streaming from URL: %s\n", mp3ApiMaskKey(inputURL))
 
 	// ffmpeg 边下载边转码，输出到 stdout
-	cmd := exec.Command("ffmpeg",
+	cmd := ffmpegCmd(nil,
 		"-i", inputURL,
-		"-threads", "0",
+		"-threads", "1",
 		"-ac", "1", "-ar", "24000", "-b:a", "32k", "-q:a", "9",
 		"-f", "mp3",
 		"-map_metadata", "-1",
@@ -612,7 +612,7 @@ func compressAndSegmentAudio(inputFile, outputDir string) error {
 	fmt.Printf("[Info] Compress and segment audio file %s\n", inputFile)
 	// Compress music files
 	outputFile := filepath.Join(outputDir, "music.mp3")
-	cmd := exec.Command("ffmpeg", "-i", inputFile, "-ac", "1", "-ab", "32k", "-ar", "24000", outputFile)
+	cmd := ffmpegCmd(nil, "-i", inputFile, "-threads", "1", "-ac", "1", "-ab", "32k", "-ar", "24000", outputFile)
 	err := cmd.Run()
 	if err != nil {
 		return err

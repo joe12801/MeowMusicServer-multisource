@@ -189,11 +189,13 @@ func ensureMusicCacheWithHeaders(remoteURL, cacheFile string, extraHeaders map[s
 	}
 	ffArgs = append(ffArgs,
 		"-i", remoteURL,
-		"-threads", "0",
+		// 单线程足够：输出只有 24kHz/32kbps 单声道。
+		// 之前 -threads 0 在 4 核小机器上吃满核，把播放链路饿死。
+		"-threads", "1",
 		"-ac", "1", "-ar", "24000", "-b:a", "32k", "-q:a", "9",
 		"-f", "mp3", "-map_metadata", "-1", "-y", tmpFile)
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", ffArgs...)
+	cmd := ffmpegCmd(ctx, ffArgs...)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -406,6 +408,10 @@ func wantsMidStreamRange(r *http.Request) bool {
 // serveAudioFull 忽略 Range，按 200 + Content-Length 一次性发完整个文件。
 // 这是 v1.6.6 之前的行为，ESP32 的 esp_http_client 按长度读完即结束，最稳。
 func serveAudioFull(w http.ResponseWriter, r *http.Request, f *os.File, size int64) error {
+	// 这个连接会一直陪着整首歌（设备消费慢），后台预热据此让路
+	audioStreams.Add(1)
+	defer audioStreams.Add(-1)
+
 	w.Header().Set("Content-Type", "audio/mpeg")
 	w.Header().Set("Accept-Ranges", "bytes")
 	if size > 0 {

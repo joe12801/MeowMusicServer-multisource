@@ -189,6 +189,10 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 
 // streamLiveHandler 实时流式转码接口 - 边下载边播放，无需等待！
 func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
+	// 实时转码流同样算「有人在听」，后台预热要让路
+	audioStreams.Add(1)
+	defer audioStreams.Add(-1)
+
 	// 设置 CORS 和音频相关头
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Accept-Ranges", "bytes")

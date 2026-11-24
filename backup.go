@@ -344,6 +344,12 @@ func warmFavorites() {
 		if _, err := os.Stat(cacheFile); err == nil {
 			continue // 已经有缓存
 		}
+		// 有人在听就先别转：这台 N1 只有 4 核，转码一上就把播放拖成一卡一卡。
+		// 宁可少预热几首，也不能让正在放的歌卡。
+		if audioBusy() {
+			fmt.Printf("[Prewarm] 检测到正在播放，跳过本轮预热（已转 %d 首）\n", done)
+			break
+		}
 		t0 := time.Now()
 		remoteURL := getRemoteMusicURLOnly(title, artist)
 		if remoteURL == "" {
@@ -355,6 +361,9 @@ func warmFavorites() {
 		}
 		done++
 		fmt.Printf("[Prewarm] ✅ %s - %s（%.1fs）\n", artist, title, time.Since(t0).Seconds())
+		// 一首一首来，中间让出 CPU：预热是后台任务，不能和正在播放的
+		// 设备抢资源（N1 这种 4 核小机器上，连续满载会让播放一卡一卡）。
+		time.Sleep(3 * time.Second)
 	}
 
 	prewarmKnown.Lock()
@@ -404,8 +413,9 @@ func startMaintenance() {
 
 	if envInt("PREWARM_TOP_N", 10) > 0 {
 		go func() {
-			// 起来别马上抢 CPU，等三分钟让服务先稳定
-			time.Sleep(3 * time.Minute)
+			// 起来别马上抢 CPU，等十分钟让服务先稳定。
+			// 原来只等 3 分钟，部署完正好撞上用户试听，转码把播放拖成一卡一卡。
+			time.Sleep(10 * time.Minute)
 			warmFavorites()
 			warmPlaylistLyrics(envInt("PREWARM_LYRIC_N", 15))
 			hour := envInt("PREWARM_HOUR", 4)
