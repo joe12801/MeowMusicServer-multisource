@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -258,6 +259,38 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	// 指定音源且缓存不是那个源来的：必须先把旧文件挪走。
+	// ensureMusicCacheWithHeaders() 见到目标文件已存在就直接返回，
+	// 不挪走的话会「只改了来源标记、音频还是旧的那条」，等于没重建。
+	stalePath := ""
+	if !serveCache && forcedSource != "" {
+		if _, statErr := os.Stat(cachedFile); statErr == nil {
+			stalePath = cachedFile + ".stale"
+			_ = os.Remove(stalePath)
+			if err := os.Rename(cachedFile, stalePath); err != nil {
+				fmt.Printf("[Stream Live] 旧缓存挪走失败（继续尝试重建）: %v\n", err)
+				stalePath = ""
+			} else {
+				fmt.Printf("[Stream Live] 旧缓存已挪到 %s\n", filepath.Base(stalePath))
+				// 时长等元数据跟着旧文件走，重建后会重新量
+				_ = os.Remove(cacheMetaPath(cachedFile))
+			}
+		}
+	}
+	// 收尾：新文件转好就丢掉旧的；没转成（任何提前返回）就把旧缓存放回去
+	defer func() {
+		if stalePath == "" {
+			return
+		}
+		if _, err := os.Stat(cachedFile); err == nil {
+			_ = os.Remove(stalePath)
+			return
+		}
+		if err := os.Rename(stalePath, cachedFile); err == nil {
+			fmt.Printf("[Stream Live] 已回滚到旧缓存\n")
+		}
+	}()
 	if serveCache {
 		fmt.Printf("[Stream Live] Serving from cache: %s\n", cachedFile)
 		// 老缓存没有 meta.json：顺手量一次时长，之后搜索能补上 duration
