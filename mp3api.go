@@ -120,5 +120,6 @@ func MP3ApiSearch(song, singer string) MusicItem {
 		Title:    song,
 		Artist:   singer,
 		AudioURL: audioURL,
+		Source:   "mp3api",
 	}
 }

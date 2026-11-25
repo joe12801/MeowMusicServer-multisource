@@ -242,6 +242,11 @@ type cacheMeta struct {
 	Duration int    `json:"duration"` // 秒
 	Size     int64  `json:"size"`
 	At       string `json:"at"`
+	// Source 记录这份缓存是从哪个音源转出来的（kuwo / netease / mp3api …）。
+	// 用途一：用户说「油管的长城」时，若缓存不是 mp3api 来的，就重建一次，
+	//         避免「指定了音源却仍放旧缓存」的困惑。
+	// 用途二：排障时能直接看出某首歌的版本是谁给的。
+	Source string `json:"src,omitempty"`
 }
 
 func cacheMetaPath(cacheFile string) string {
@@ -310,6 +315,34 @@ func backfillCacheDuration(cacheFile string) {
 		return
 	}
 	fmt.Printf("[Cache] 回填时长 %s = %ds\n", filepath.Base(filepath.Dir(cacheFile)), sec)
+}
+
+// markCacheSource 记下这份缓存是从哪个音源转出来的。
+// 转码完成后调用；没有 meta 时顺手量一次时长，一并写进去。
+func markCacheSource(cacheFile, source string) {
+	if cacheFile == "" || source == "" {
+		return
+	}
+	m, ok := readCacheMeta(cacheFile)
+	if !ok {
+		info, err := os.Stat(cacheFile)
+		if err != nil {
+			return
+		}
+		sec := probeDurationSeconds(cacheFile)
+		if sec <= 0 {
+			return
+		}
+		m = cacheMeta{Duration: sec, Size: info.Size(), At: time.Now().Format(time.RFC3339)}
+	}
+	m.Source = source
+	data, err := json.MarshalIndent(m, "", " ")
+	if err != nil {
+		return
+	}
+	if err := writeFileAtomic(cacheMetaPath(cacheFile), data, 0o644); err != nil {
+		fmt.Printf("[Cache] 记录来源失败 %s: %v\n", source, err)
+	}
 }
 
 // cachedDuration 查已缓存歌曲的真实时长（秒），0 表示还不知道。

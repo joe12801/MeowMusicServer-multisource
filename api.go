@@ -245,7 +245,20 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 	cachedFile := musicCacheFile(song, singer)
 
 	// 1. 缓存命中：定长返回（带 Content-Length，设备按长度读完即结束）
-	if _, err := os.Stat(cachedFile); err == nil {
+	//    例外：用户点名了音源（说「油管的长城」），而现有缓存不是那个源来的——
+	//    说明缓存可能是别人唱的同名曲，宁可贵一次也要重建，否则「指定音源」形同虚设。
+	serveCache := false
+	if _, statErr := os.Stat(cachedFile); statErr == nil {
+		serveCache = true
+		if forcedSource != "" {
+			meta, ok := readCacheMeta(cachedFile)
+			if !ok || meta.Source != forcedSource {
+				serveCache = false
+				fmt.Printf("[Stream Live] 指定音源 %s，现有缓存来源=%q，重新取源\n", forcedSource, meta.Source)
+			}
+		}
+	}
+	if serveCache {
 		fmt.Printf("[Stream Live] Serving from cache: %s\n", cachedFile)
 		// 老缓存没有 meta.json：顺手量一次时长，之后搜索能补上 duration
 		if _, ok := readCacheMeta(cachedFile); !ok {
@@ -413,6 +426,9 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Transcode failed", http.StatusInternalServerError)
 		return
 	}
+
+	// 记下这份缓存是哪个源转出来的：指定音源时靠它判断要不要重建
+	markCacheSource(cachedFile, srcName)
 
 	// 转码成功才记账（命中缓存不算额度，重复听同一首不会消耗）
 	if info, err := os.Stat(cachedFile); err == nil {
