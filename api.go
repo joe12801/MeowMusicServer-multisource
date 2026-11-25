@@ -18,6 +18,12 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[Web Access] Handling request for %s?%s\n", r.URL.Path, queryParams.Encode())
 	song := queryParams.Get("song")
 	singer := queryParams.Get("singer")
+	// 「指定音源」：用户说「油管的长城」时，固件会把提示放进 source 参数；
+	// 老固件没这个参数时，从歌名开头的「油管/youtube」里认。
+	song, singer, forcedSource := splitSourceHint(song, singer, queryParams.Get("source"))
+	if forcedSource != "" {
+		fmt.Printf("[API] 指定音源 %s，歌名清理为 %q\n", forcedSource, song)
+	}
 
 	ip, err := IPhandler(r)
 	if err != nil {
@@ -154,8 +160,12 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		encodedSong := url.QueryEscape(song)
 		encodedSinger := url.QueryEscape(singer)
 		streamURL := scheme + "://" + r.Host + "/stream_live?song=" + encodedSong + "&singer=" + encodedSinger
+		if forcedSource != "" {
+			// 把「指定音源」一起带给 /stream_live，否则播放时又会走回国内源
+			streamURL += "&source=" + url.QueryEscape(forcedSource)
+		}
 		fmt.Println("[Info] Updating music item cache from API request.")
-		musicItem = requestAndCacheMusic(song, singer)
+		musicItem = requestAndCacheMusic(song, singer, forcedSource)
 		fmt.Println("[Info] Music item cache updated.")
 		musicItem.FromCache = false
 		musicItem.AudioURL = streamURL
@@ -200,6 +210,9 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	song := queryParams.Get("song")
 	singer := queryParams.Get("singer")
+	// 指定音源（「油管的长城」→ mp3api）：新版固件走 source 参数，
+	// 老固件/网页直接调用时从歌名开头的标记里认。
+	song, singer, forcedSource := splitSourceHint(song, singer, queryParams.Get("source"))
 	// xid：上游 id。喜马拉雅是纯数字 trackId，5sing 是 fs:<songId>:<typeEname>。
 	// 这类内容（有声书/播客/原创翻唱）和音乐源完全不重叠，只能按 id 直取，
 	// 不能靠歌名二次解析，否则会放成同名的歌。
@@ -208,7 +221,7 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 	// 按 BV 号取流（cid 在播放时再用 view 接口换），不跑多源链路。
 	bv := strings.TrimSpace(queryParams.Get("bv"))
 
-	fmt.Printf("[Stream Live] Request: song=%s, singer=%s, xid=%s, bv=%s\n", song, singer, xid, bv)
+	fmt.Printf("[Stream Live] Request: song=%s, singer=%s, xid=%s, bv=%s, source=%s\n", song, singer, xid, bv, forcedSource)
 
 	if song == "" {
 		http.Error(w, "Missing song parameter", http.StatusBadRequest)
@@ -351,7 +364,7 @@ func streamLiveHandler(w http.ResponseWriter, r *http.Request) {
 			return ""
 		}
 	default:
-		remoteURL, srcName = getRemoteMusicURLWithSource(song, singer)
+		remoteURL, srcName = getRemoteMusicURLWithSource(song, singer, forcedSource)
 		refetch = func() string { return refetchRemoteURL(song, singer, srcName) }
 	}
 	if remoteURL == "" {

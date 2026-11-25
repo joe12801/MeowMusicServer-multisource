@@ -158,6 +158,34 @@ sed -i 's#^MEOW_IMAGE=.*#MEOW_IMAGE=joe1280/meowmusic:sha-1a2b3c4#' .env
 docker compose pull && docker compose up -d
 ```
 
+### 播放预热（解决「首次播放要等十几秒」）
+
+`/stream_live` 对未缓存的歌是**先整首转码落盘、再定长回包**，所以第一次听某首歌必然要等。
+在 4 核小机器上实测（Beyond《农民》，10.4MB / 4 分钟）：
+
+| 环节 | 耗时 |
+|---|---|
+| 从音源下载整首 | 2 秒 |
+| ffmpeg 转 24kHz/32kbps 单声道 | **17 秒** |
+| 命中缓存后再播放 | 0.05 秒 |
+
+`-threads 1`、`-threads 0`、去掉 `nice -n 19`、CBR 换 VBR 都试过，差别只有 1~2 秒——
+瓶颈就是 CPU 本身（如果同机还跑着 NVR 转码，会更慢）。所以别指望调参数，直接把歌提前转好：
+
+```bash
+# 脚本随 deploy 目录提供，拷到宿主即可
+chmod +x warm-playlist.sh
+./warm-playlist.sh          # 转全部歌单（已缓存的 0.1 秒跳过，幂等，可重复跑）
+./warm-playlist.sh 20       # 只跑前 20 首，先看效果
+
+# 后台跑，夜间补齐（歌单新增歌后再跑一次）
+nohup setsid ./warm-playlist.sh > /tmp/warm.log 2>&1 < /dev/null &
+tail -f /tmp/warm.log
+```
+
+脚本走 `127.0.0.1`，串行执行，任意时刻只占一个 ffmpeg，不会把正在播放的歌挤掉。
+109 首的歌单里若有一半没缓存，补齐约需 15~20 分钟。
+
 ---
 
 ## 6. 排障
@@ -170,6 +198,8 @@ docker compose pull && docker compose up -d
 | 2233 被占用 | 改 `.env` 的 `MEOW_PORT`，容器内端口不用动 |
 | 网页能开，音箱拉歌单无声音 | 先确认 `PLAYLIST_SONGS_MAX` ≤ 150；再看 `logs` 里有没有 `/stream_pcm` 请求进来（没有请求＝设备端拿不到列表或地址不对） |
 | 播放国内下架歌失败 | 配 `MUSIC_MP3API_KEY`；首次播放需服务端转码，可能等 60~90 秒，属正常 |
+| 有些歌要等十几秒才出声 | 未缓存，正在整首转码。用 `deploy/warm-playlist.sh` 提前转好（见第 5 节） |
+| 日志里 `Cache miss` 远多于 `Serving from cache` | 同上，歌单里的歌大多还没转码；先跑一次预热 |
 | 时间显示不对 | 确认 `TZ=Asia/Shanghai` 且宿主时间正常 |
 | 磁盘被缓存吃满 | 缓存都在 `data/cache`，可定期清理旧文件；务必把 `MEOW_DATA_DIR` 放在大盘 |
 

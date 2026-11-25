@@ -261,16 +261,36 @@ func srcNoiseOf(name, album, song string) (int, bool, bool) {
 //
 // 临时调整：设 MUSIC_MP3API_FIRST=1 可把 mp3.994938.xyz 提到整条链路最前
 // （其它源仍在后面兜底），去掉环境变量重启即恢复，不必回滚二进制。
-func requestAndCacheMusic(song, singer string) MusicItem {
+func requestAndCacheMusic(song, singer string, forceSource ...string) MusicItem {
+	// forceSource：用户点名要走哪个源（目前只有「油管」→ mp3api）。
+	// 走可变参数是为了不影响其它调用点（网页、yuafeng 递归）。
+	forced := ""
+	if len(forceSource) > 0 {
+		forced = knownSourceHint(forceSource[0])
+	}
+
 	// 后台顺手预热：不管最终走哪个源，都异步让 mp3api 缓存这首歌，
 	// 方便以后兜底到它时秒回。不影响本次返回（前面的源照常优先）。
-	defer mp3ApiPrewarmAsync(song, singer)
+	// 本次已经点名用 mp3api 时不必再预热一遍。
+	if forced != "mp3api" {
+		defer mp3ApiPrewarmAsync(song, singer)
+	}
 
 	first := mp3ApiFirst()
-	fmt.Printf("[Source] %q - %q | kuwo=%v kugou=%v netease=%v xfabe=%v qq=%v gdstudio=%v mp3api=%v first=%v\n",
+	fmt.Printf("[Source] %q - %q | kuwo=%v kugou=%v netease=%v xfabe=%v qq=%v gdstudio=%v mp3api=%v first=%v forced=%q\n",
 		song, singer, srcEnabled("kuwo"), srcEnabled("kugou"),
 		srcEnabled("netease"), srcEnabled("xfabe"), srcEnabled("qq"),
-		srcEnabled("gdstudio"), srcEnabled("mp3api"), first)
+		srcEnabled("gdstudio"), srcEnabled("mp3api"), first, forced)
+
+	// 用户点名「油管」：直接走 mp3api，不在国内源里找同名曲。
+	// 这一源没命中就照常回退到完整链路，避免因为一个源坏了就整首放不出来。
+	if forced == "mp3api" && srcEnabled("mp3api") {
+		fmt.Printf("[Source] 用户指定 mp3api（YouTube），跳过国内链路\n")
+		if item := trySource("mp3api-forced", func() MusicItem { return MP3ApiSearch(song, singer) }); item.Title != "" && item.AudioURL != "" {
+			return item
+		}
+		fmt.Printf("[Source] 指定 mp3api 未命中，回退常规链路\n")
+	}
 
 	// 临时前置：先试自建 yt-dlp 源，命中就直接返回；没命中继续原有链路。
 	// 后段不再重复探一次，避免同一请求里双倍冷启动等待。
@@ -382,10 +402,10 @@ func requestAndCacheMusic(song, singer string) MusicItem {
 // 但额外返回命中的音源名（MusicItem.Source）。/stream_live 需要它来判断
 // 转码失败后该不该「重新取链换节点」——不同源的可重试性不一样，
 // 见 retryableTranscodeSource。
-func getRemoteMusicURLWithSource(song, singer string) (string, string) {
+func getRemoteMusicURLWithSource(song, singer string, forceSource ...string) (string, string) {
 	fmt.Printf("[Info] Getting remote music URL for: %s - %s\n", singer, song)
 
-	if item := requestAndCacheMusic(song, singer); item.AudioURL != "" {
+	if item := requestAndCacheMusic(song, singer, forceSource...); item.AudioURL != "" {
 		return item.AudioURL, item.Source
 	}
 

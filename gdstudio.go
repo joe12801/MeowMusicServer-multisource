@@ -33,6 +33,10 @@ type gdTrack struct {
 	LyricID string   `json:"lyric_id"`
 	Source  string   `json:"source"`
 	score   int      // 内部排序用，不参与 JSON
+
+	// artistMatched 歌手是否真的对得上。只有它为 true 的候选才允许被选中：
+	// 避免「点 Beyond《长城》、放成 Bobby Cole《长城》」这类同名不同人的事故。
+	artistMatched bool
 }
 
 // gdFatalMarkers 命中即整条丢弃的版本标记。
@@ -225,6 +229,26 @@ func gdOverlap(want, got string) float64 {
 	if want == "" {
 		return 0
 	}
+	// 拉丁字母名字按「整词」比较。原来按字符集合比较，会让
+	// "Beyond" 与 "Bobby Cole" 因为共享 b/o/y/e 就拿到 0.67 的高分，
+	// 于是把别人的同名曲当成了原唱（长城 → Bobby Cole，实测事故）。
+	if gdIsLatin(want) && gdIsLatin(got) {
+		wt := gdWords(want)
+		gt := gdWords(got)
+		if len(wt) == 0 || len(gt) == 0 {
+			return 0
+		}
+		hits := 0
+		for _, w := range wt {
+			for _, g := range gt {
+				if w == g {
+					hits++
+					break
+				}
+			}
+		}
+		return float64(hits) / float64(len(wt))
+	}
 	gr := []rune(got)
 	hits := 0
 	total := 0
@@ -238,6 +262,30 @@ func gdOverlap(want, got string) float64 {
 		}
 	}
 	return float64(hits) / float64(total)
+}
+
+// gdIsLatin 判断是否为纯拉丁字母（含数字/空格/常见分隔符）的名字。
+// 中文、日文、韩文名字不走整词比较，仍用字符重合率兜繁简差异。
+func gdIsLatin(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == ' ' || r == '-' || r == '.' || r == '&' || r == '\'':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// gdWords 切词并归一（小写、去掉空段），用于拉丁名字的整词比较。
+func gdWords(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+	})
 }
 
 func gdScoreTrack(t *gdTrack, song, singer string) int {
@@ -285,10 +333,12 @@ func gdScoreTrack(t *gdTrack, song, singer string) int {
 	// 2c) 「(原唱 周杰伦)」这类标注：括号里点名了目标歌手，说明是照原版重录的，
 	// 比随便一个翻唱号（JustForFun、阿杰之类）更接近原唱。
 	// 境外曲库只剩 netease 搬运，靠这条挑版本。
+	bracketNamesSinger := false
 	if legitBracket && wantSinger != "" {
 		bt := gdNorm(gdBracketText(t.Name))
 		if bt != "" && (strings.Contains(bt, wantSinger) || gdOverlap(wantSinger, bt) >= 0.99) {
 			score += 55
+			bracketNamesSinger = true
 		}
 	}
 
@@ -321,6 +371,11 @@ func gdScoreTrack(t *gdTrack, song, singer string) int {
 		score -= 30
 	}
 
+	// 记录歌手是否对得上：只有 true 的候选才可能被选中。
+	// 像「点 Beyond《长城》」这种情况，曲库里只有 Bobby Cole 的同名曲，
+	// 与其硬塞别人的歌，不如让整源落空、交给后面的 mp3api（YouTube）兜底。
+	t.artistMatched = artistMatched || bracketNamesSinger
+
 	// 4) 专辑是原版专辑的加分（晴天 → 叶惠美）
 	if t.Album != "" && gotName == wantSong && !strings.Contains(strings.ToLower(t.Album), "翻唱") {
 		score += 5
@@ -329,14 +384,21 @@ func gdScoreTrack(t *gdTrack, song, singer string) int {
 	return score
 }
 
-// gdRankTracks 按贴合度排序，返回分数 >= minScore 的候选
+// gdRankTracks 按贴合度排序，返回分数 >= minScore 的候选。
+// 指定了歌手时，只保留歌手真的对得上的候选：宁可这一源空手而归，
+// 也不能把同名的别人的歌放给用户听。
 func gdRankTracks(tracks []gdTrack, song, singer string, minScore int) []gdTrack {
 	out := make([]gdTrack, 0, len(tracks))
+	requireArtist := strings.TrimSpace(singer) != ""
 	for _, t := range tracks {
 		t.score = gdScoreTrack(&t, song, singer)
-		if t.score >= minScore {
-			out = append(out, t)
+		if t.score < minScore {
+			continue
 		}
+		if requireArtist && !t.artistMatched {
+			continue
+		}
+		out = append(out, t)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].score > out[j].score })
 	return out
@@ -644,8 +706,13 @@ func GDStudioSearch(song, singer string) MusicItem {
 			}
 		}
 	}
-	// 全部被分数阈值筛掉时，退回原始顺序碰运气
+	// 全部被筛掉时：没指定歌手才退回原始顺序碰运气；
+	// 指定了歌手就说明这源确实没有原唱，直接放弃，别再拿同名曲凑数。
 	if len(queue) == 0 {
+		if strings.TrimSpace(singer) != "" {
+			fmt.Printf("[GDStudio] 无歌手可信候选，跳过本源: %q - %q\n", song, singer)
+			return MusicItem{}
+		}
 		queue = pool
 	}
 
